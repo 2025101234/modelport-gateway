@@ -1,0 +1,22 @@
+node_modules/
+dist/
+*.log
+*.tgz
+.DS_Store
+Thumbs.db
+
+# 本机数据目录与演示数据（如果有人在仓库里跑过）
+.modelport/
+.demo-data/
+.verify/
+.shots*/
+.verify-shots/
+.probe-*
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 构建与测试脚手架
+app/node_modules/

@@ -1,0 +1,36 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The console's build is reproducible from app/ui, so a stale web/ tree is
+      # a defect the check catches rather than something the run regenerates.
+      - name: Install console build dependencies
+        run: npm install --prefix app --ignore-scripts --no-audit --no-fund
+      - name: Console assets match their source
+        run: node scripts/build-ui.mjs --check
+      # The channel bundle is generated from vendor/channel-pack, so the same
+      # reasoning applies: a hand-edited app/channels/business.mjs fails here.
+      - name: Channel bundle matches its input
+        run: node scripts/build-channels.mjs --check
+      # esbuild strips types without checking them, so a stale page id or a field
+      # that no longer exists survives a green build. This step is what catches
+      # that class of leftover.
+      - name: Console types
+        run: npm run typecheck
+      - name: Offline suites
+        run: node scripts/test-all.mjs

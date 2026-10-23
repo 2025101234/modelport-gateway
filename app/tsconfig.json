@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "skipLibCheck": true,
+    "types": ["vite/client"]
+  },
+  "//": "include 曾经指向上游的 frontend/ 目录，而本仓库的界面在 ui/——于是 tsc 一直报 TS18003 而不是检查任何东西。",
+  "include": ["ui"]
+}

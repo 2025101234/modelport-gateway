@@ -1,0 +1,182 @@
+/* 账号渠道页。复用 app.css 的 ui-card / ui-badge / dashboard-heading 契约。 */
+
+.channels-browser { max-width: 1100px; }
+
+.channels-feedback,
+.channels-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  font-size: 13px;
+  border-radius: 10px;
+}
+
+.channels-feedback { color: #1e6b4f; background: #edf7f1; border: 1px solid #cfe8da; }
+.channels-error { color: #8c2f3c; background: #fdf1f2; border: 1px solid #f0d3d7; }
+
+.channels-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 22px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.channels-layout {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.channels-list { padding: 8px; }
+
+.channels-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.channel-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 9px 10px;
+  text-align: left;
+  color: inherit;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.channel-item:hover { background: var(--dsw-alias-bg-layer-2); }
+
+.channel-item.is-active {
+  background: var(--dsw-alias-bg-layer-2);
+  border-color: var(--dsw-alias-border-l2);
+}
+
+.channel-item-name { font-size: 13px; font-weight: 600; }
+.channel-item-note { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+
+.channels-detail { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+
+.channel-card { padding: 18px 20px; }
+
+.channel-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.channel-card-head h2 { margin: 0 0 3px; font-size: 15px; }
+.channel-card-head p { margin: 0; font-size: 12px; color: var(--muted); }
+.channel-card-head code { font-family: "Cascadia Code", Consolas, monospace; font-size: 11.5px; }
+
+.channel-card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.channel-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 14px 0 0;
+  background: var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.channel-metrics > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.channel-metrics strong { margin-left: auto; font-size: 15px; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+.channel-login {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--dsw-alias-bg-layer-2);
+  border-radius: 10px;
+}
+
+.channel-login p { display: flex; align-items: center; gap: 7px; margin: 0 0 8px; font-size: 12.5px; color: var(--muted); }
+.channel-login a { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--green); }
+
+.channel-sms { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.channel-sms .ui-input { flex: 1 1 160px; }
+.channel-hint { font-size: 12px; color: var(--muted); }
+
+.channel-accounts { margin-top: 16px; }
+
+.channel-accounts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.channel-account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  background: var(--dsw-alias-bg-layer-2);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.channel-account-name { font-weight: 600; overflow-wrap: anywhere; }
+.channel-account-exp { color: var(--muted); }
+
+.channel-models {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 12px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.channel-model {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  background: var(--dsw-alias-bg-layer-1);
+  cursor: pointer;
+}
+
+.channel-model.is-dead { opacity: 0.55; }
+.channel-model-name { font-weight: 550; }
+.channel-model code { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.channel-model .ui-badge { margin-left: auto; }
+
+@media (max-width: 860px) {
+  .channels-layout { grid-template-columns: 1fr; }
+  .channel-metrics { grid-template-columns: 1fr; }
+}

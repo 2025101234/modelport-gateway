@@ -1,0 +1,34 @@
+{
+  "name": "modelport",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ModelPort — 一个跑在自己机器上的模型口岸：独立 Web 控制台、本地 URL、API Key，把多路模型来源统一成 OpenAI / Anthropic / Responses 三种协议，供任意 Agent 与 SDK 调用。",
+  "main": "./app/service.mjs",
+  "exports": {
+    ".": "./app/service.mjs",
+    "./service": "./app/service.mjs"
+  },
+  "scripts": {
+    "start": "node app/cli.mjs",
+    "build:ui": "node scripts/build-ui.mjs",
+    "test": "node scripts/test-all.mjs",
+    "e2e": "node scripts/e2e-check.mjs",
+    "demo": "node scripts/demo-server.mjs",
+    "typecheck": "npm run typecheck --prefix app",
+    "channels:build": "node scripts/build-channels.mjs"
+  },
+  "keywords": [
+    "modelport",
+    "llm",
+    "gateway",
+    "openai-compatible",
+    "anthropic",
+    "local",
+    "agent"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,155 @@
+/* 路由链路页样式。复用 app.css 的 ui-card / ui-badge / dashboard-heading 契约。 */
+
+.routing-browser { max-width: 1000px; }
+
+.routing-feedback,
+.routing-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  font-size: 13px;
+  border-radius: 10px;
+}
+
+.routing-feedback { color: #1e6b4f; background: #edf7f1; border: 1px solid #cfe8da; }
+.routing-error { color: #8c2f3c; background: #fdf1f2; border: 1px solid #f0d3d7; }
+
+.routing-panel { margin-bottom: 18px; }
+
+.routing-empty { margin: 16px 0 4px; font-size: 13px; line-height: 1.7; color: var(--muted); }
+
+.routing-list { display: flex; flex-direction: column; gap: 1px; margin-top: 14px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+
+.routing-row { padding: 14px 16px; background: var(--dsw-alias-bg-layer-1); }
+
+.routing-row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.routing-identity { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.routing-identity strong { font-size: 14px; }
+.routing-identity code { font-family: "Cascadia Code", Consolas, monospace; font-size: 11.5px; color: var(--muted); }
+.routing-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+.routing-actions { display: flex; gap: 6px; }
+
+.routing-members { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 0; padding: 0; list-style: none; }
+
+.routing-members li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  background: var(--dsw-alias-bg-layer-2);
+  border-radius: 8px;
+  flex-wrap: wrap;
+}
+
+.routing-members li strong { font-weight: 600; }
+.routing-members li code { font-family: "Cascadia Code", Consolas, monospace; font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+
+.routing-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--green);
+  border-radius: 50%;
+}
+
+.routing-editor .ui-input { margin-bottom: 4px; }
+
+.routing-inline {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr .7fr;
+  gap: 14px;
+  margin: 12px 0;
+}
+
+.routing-inline > div { display: flex; flex-direction: column; gap: 6px; }
+.routing-inline label { font-size: 12px; font-weight: 600; color: var(--muted); }
+
+.routing-inline select {
+  padding: 7px 9px;
+  font-size: 12.5px;
+  color: inherit;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+}
+
+.routing-inline input[type=checkbox] { width: 18px; height: 18px; }
+
+.routing-members-editor { margin: 14px 0; }
+.routing-members-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.routing-members-head strong { font-size: 13px; }
+
+.routing-hint { margin: 6px 0; font-size: 12.5px; color: var(--muted); }
+
+.routing-member-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+
+.routing-member-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  background: var(--dsw-alias-bg-layer-2);
+  border-radius: 8px;
+  flex-wrap: wrap;
+}
+
+.routing-member-name { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.routing-member-name code { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.routing-member-actions { display: flex; gap: 2px; }
+
+.routing-picker { margin-top: 10px; padding: 10px; background: var(--dsw-alias-bg-layer-3); border-radius: 10px; }
+
+.routing-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  margin-top: 8px;
+  overflow-y: auto;
+}
+
+.routing-picker-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  text-align: left;
+  color: inherit;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.routing-picker-list button:hover:not(:disabled) { border-color: var(--dsw-alias-border-l2); }
+.routing-picker-list button:disabled { opacity: .45; cursor: default; }
+.routing-picker-list button span { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.routing-picker-list button code { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+
+.routing-capacity {
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--dsw-alias-bg-layer-2);
+  border-radius: 8px;
+}
+
+.routing-footer { display: flex; justify-content: flex-end; margin-top: 14px; }
+
+@media (max-width: 720px) {
+  .routing-inline { grid-template-columns: 1fr; }
+  .routing-row-head { flex-direction: column; }
+}

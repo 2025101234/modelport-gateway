@@ -1,0 +1,114 @@
+/* API 接入页的增量样式：复用 app.css 里既有的 connection-* 卡片外观。 */
+
+.connection-recipes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 14px 0 10px;
+}
+
+.connection-recipes button {
+  padding: 7px 12px;
+  font-size: 12.5px;
+  color: var(--muted);
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color .16s ease, background .16s ease, border-color .16s ease;
+}
+
+.connection-recipes button:hover {
+  color: var(--ink);
+  border-color: var(--dsw-alias-border-l2);
+}
+
+.connection-recipes button.is-active {
+  color: #fff;
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.connection-recipe-note {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.connection-example-wrap {
+  position: relative;
+}
+
+.connection-example-wrap > .ui-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+}
+
+.connection-example-wrap .connection-example {
+  margin: 0;
+  padding: 16px 18px;
+  overflow-x: auto;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #e8e3d9;
+  background: #211f1c;
+  border-radius: 10px;
+  white-space: pre;
+}
+
+.connection-lan-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.connection-protocol-table {
+  display: grid;
+  gap: 1px;
+  margin-top: 12px;
+  font-size: 12.5px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.connection-protocol-table > div {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.3fr) minmax(140px, 1fr) minmax(180px, 1.4fr);
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.connection-protocol-table > div > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.connection-protocol-table > .connection-protocol-head {
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.connection-protocol-table code {
+  font-family: "Cascadia Code", Consolas, monospace;
+  color: var(--green);
+}
+
+@media (max-width: 720px) {
+  .connection-protocol-table > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .connection-protocol-table > .connection-protocol-head {
+    display: none;
+  }
+}
