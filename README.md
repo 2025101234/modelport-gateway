@@ -33,8 +33,8 @@
 ### 第一步：拿到代码
 
 ```bash
-git clone https://github.com/2025101234/modelport.git
-cd modelport
+git clone https://github.com/2025101234/modelport-gateway.git
+cd modelport-gateway
 ```
 
 ### 第二步：装控制台的构建依赖
