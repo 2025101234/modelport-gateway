@@ -11,6 +11,8 @@ Thumbs.db
 .verify/
 .shots*/
 .verify-shots/
+.grok-profile/
+.grok-shots/
 .probe-*
 
 # 编辑器

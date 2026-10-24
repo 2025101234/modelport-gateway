@@ -17,6 +17,7 @@ const CHANNEL_NAMES: Record<string, string> = {
   codearts: 'CodeArts', buddy: 'CodeBuddy', workbuddy: 'WorkBuddy', lobsterai: 'LobsterAI',
   qoder: 'Qoder', qodercn: 'Qoder 中国版', trae: 'TRAE', cline: 'Cline',
   loomy: 'Loomy', raccoon: 'Raccoon', minimax: 'MiniMax Code', zcode: 'ZCode', gemini: 'Gemini',
+  grok: 'Grok',
 }
 /** 一句话说明每家是什么、从哪来。 */
 const CHANNEL_NOTES: Record<string, string> = {
@@ -33,9 +34,20 @@ const CHANNEL_NOTES: Record<string, string> = {
   minimax: 'MiniMax Code',
   zcode: '智谱 · ZCode',
   gemini: 'Google Code Assist',
+  // Grok 与上面 13 家不同：它不是官方开放接口，而是网页端的反向代理，且要
+  // 自己粘贴 Cookie。说明里把这两点讲清楚，免得用户以为点一下就能登录。
+  grok: 'xAI · grok.com 网页端（需粘贴 Cookie）',
 }
 /** 需要短信二次确认的渠道，登录面板要多两个输入框。 */
 const SMS_PROVIDERS = new Set(['trae'])
+/**
+ * 需要粘贴 Cookie 而不是走 OAuth 弹窗的渠道。
+ *
+ * Grok 不在上游渠道包里，没有 account.create 那套登录流程（对它会答
+ * unknown provider），所以它的凭据由用户直接从浏览器粘贴。这与其余 13 家的
+ * 「点一下弹登录页」不同，界面必须区别对待，否则按钮点下去只会报错。
+ */
+const COOKIE_PROVIDERS = new Set(['grok'])
 
 type Account = { id: string; provider: string; nickname?: string; enabled?: boolean; expiresAt?: number; refreshable?: boolean }
 type ModelRow = { id: string; name?: string; disabled?: boolean; dead?: boolean }
@@ -54,6 +66,8 @@ export function Channels({ summary, host, active }: { summary: Summary; host: Ho
   const [pendingId, setPendingId] = useState('')
   const [smsCode, setSmsCode] = useState('')
   const [smsSent, setSmsSent] = useState(false)
+  const [cookieText, setCookieText] = useState('')
+  const [cookieSaved, setCookieSaved] = useState(false)
   const mounted = useRef(true)
   useEffect(() => () => { mounted.current = false }, [])
   useEffect(() => { if (!active) { setMessage(''); setError('') } }, [active])
@@ -99,6 +113,11 @@ export function Channels({ summary, host, active }: { summary: Summary; host: Ho
   }
 
   const login = (provider: string) => run(`login:${provider}`, async () => {
+    // Cookie 类渠道没有 OAuth 弹窗可开，按钮的点法是「展开粘贴框」，不是去登录。
+    if (COOKIE_PROVIDERS.has(provider)) {
+      setMessage('把 grok.com 的 Cookie 粘贴到下面，保存后即可调用。')
+      return
+    }
     const created = await rpc<{ accountId: string; loginUrl: string }>('account.create', { provider }, 90000)
     if (!mounted.current) return
     setPendingId(created.accountId)
@@ -107,6 +126,17 @@ export function Channels({ summary, host, active }: { summary: Summary; host: Ho
     setSmsSent(false); setSmsCode('')
     setMessage('已打开登录页。完成授权后回到这里，会自动检测。')
     await host.refresh()
+  })
+
+  /** Grok 的凭据保存：校验在服务端做，这里只负责把结果说清楚。 */
+  const saveCookie = (provider: string) => run(`cookie:${provider}`, async () => {
+    const value = cookieText.trim()
+    if (value === '') throw new Error('请先粘贴 Cookie')
+    await rpc('grok.credential.set', { cookie: value }, 30000)
+    if (!mounted.current) return
+    setCookieSaved(true)
+    setMessage('已保存。Grok 的模型现在可以调用了。')
+    void load(selected); void host.refresh()
   })
 
   // 登录是后台异步完成的：轮询到账号出现为止，最多 5 分钟。
@@ -198,6 +228,23 @@ export function Channels({ summary, host, active }: { summary: Summary; host: Ho
             <div><Network size={15} /><span>模型</span><strong>{enabledCount} / {models.length}</strong></div>
             <div><Wallet size={15} /><span>余额</span><strong>{credits.length > 0 ? '已读取' : '—'}</strong></div>
           </div>
+          {COOKIE_PROVIDERS.has(selected) && <div className="channel-login">
+            <p><KeyRound size={14} />Grok 走的是网页端反向代理，没有标准的登录回跳，所以凭据要你从浏览器里复制一次。</p>
+            <ol className="channel-cookie-steps">
+              <li>在浏览器打开 <a href="https://grok.com" target="_blank" rel="noreferrer noopener">grok.com <ExternalLink size={11} /></a> 并确认已登录</li>
+              <li>按 F12 → <strong>应用 / Application</strong> → <strong>Cookie</strong> → <code>https://grok.com</code></li>
+              <li>把整行复制成 <code>sso=…; x-userid=…</code> 的形式粘到下面</li>
+            </ol>
+            <textarea aria-label="Grok Cookie" className="channel-cookie-input" rows={3}
+              placeholder="sso=...; x-userid=..." value={cookieText}
+              onChange={event => setCookieText(event.target.value)} />
+            <div className="channel-cookie-actions">
+              <Button onClick={() => saveCookie(selected)} disabled={busy !== '' || cookieText.trim() === ''}>
+                {busy === 'cookie:grok' ? <LoaderCircle size={14} className="spinning" /> : <KeyRound size={14} />}保存 Cookie</Button>
+              {cookieSaved && <span className="channel-hint">已保存</span>}
+            </div>
+            <p className="channel-hint">凭据写入本机 channel-credentials.json（0600），页面拿不到明文。这是非官方接口，上游改动可能使其失效。</p>
+          </div>}
           {(pendingId !== '' || loginUrl !== '') && <div className="channel-login">
             <p><Clock size={14} />正在等待授权完成…</p>
             {loginUrl && <a href={loginUrl} target="_blank" rel="noreferrer noopener">重新打开登录页 <ExternalLink size={12} /></a>}

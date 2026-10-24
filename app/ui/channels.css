@@ -122,6 +122,31 @@
 .channel-sms .ui-input { flex: 1 1 160px; }
 .channel-hint { font-size: 12px; color: var(--muted); }
 
+/* 粘贴 Cookie 类渠道（目前只有 Grok）：没有登录回跳，靠用户复制一次凭据。 */
+.channel-cookie-steps {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.channel-cookie-steps code { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; }
+.channel-cookie-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  border: 1px solid var(--line, #dcd8cf);
+  border-radius: 9px;
+  resize: vertical;
+}
+.channel-cookie-input:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.channel-cookie-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+
 .channel-accounts { margin-top: 16px; }
 
 .channel-accounts-head {

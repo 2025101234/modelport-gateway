@@ -26,10 +26,17 @@ const check = async (name, body) => {
   }
 }
 
-/** 十三个渠道的 provider id，按渠道包注册顺序。 */
+/**
+ * 渠道的 provider id 清单：十三家来自上游渠道包（按包内注册顺序），外加 grok。
+ *
+ * Grok 是本仓库自己注册的（见 app/channels/grok.mjs）而不是渠道包里的，所以它排在
+ * 最后，且是唯一一个不走 `account.create` 登录流程的渠道——它的凭据靠用户粘贴
+ * Cookie。别把这一行当成笔误删掉：删了这条断言就再也发现不了「grok 悄悄不见了」。
+ */
 const EXPECTED = [
   'codearts', 'buddy', 'workbuddy', 'lobsterai', 'qoder', 'qodercn',
   'trae', 'cline', 'loomy', 'raccoon', 'minimax', 'gemini', 'zcode',
+  'grok',
 ]
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-channels-'))
@@ -38,7 +45,7 @@ const quiet = { warn: () => {}, info: () => {}, error: () => {} }
 // ── the runtime on its own ───────────────────────────────────────────────────
 const runtime = await createChannelRuntime({ dataDir, logger: quiet })
 
-await check('the runtime registers all thirteen channels', () => {
+await check('the runtime registers every channel, including the one it owns itself', () => {
   assert.deepEqual([...runtime.providers].sort(), [...EXPECTED].sort())
 })
 

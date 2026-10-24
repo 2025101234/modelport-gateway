@@ -7,6 +7,7 @@ import {
   responsesReasoningEffort, normalizeMaxTokens, responsesMaxOutputTokens, markGatewayChannel,
   collectGatewayModels, collectGatewayEffortViews, toOpenAiModels,
 } from './business.mjs'
+import { GrokAdapter, GROK_ID, GROK_CREDENTIAL_REF, GROK_MODELS, parseGrokCredential, resolveUserId } from './grok.mjs'
 
 const cleanups = []
 const adapters = new Map()
@@ -80,6 +81,49 @@ async function models() {
 }
 
 async function rpc(call, signal) {
+  // Grok 由本仓库自己实现，不在上游渠道包里，所以它的凭据读写不能走渠道包的
+  // RPC（那边会答 unknown provider: grok）。在转发给渠道包之前先拦下这两条，
+  // 其余 method 原样透传。
+  if (call.method === 'grok.credential.set') {
+    const value = call.payload?.cookie
+    if (typeof value !== 'string' || value.trim() === '') {
+      return { ok: false, error: { code: 'bad-request', message: '需要粘贴 grok.com 的 Cookie' } }
+    }
+    let cookies
+    let userId
+    try {
+      cookies = parseGrokCredential(value)
+      // 先校验再落盘：存进去却解析不出 uid 的凭据，只会在下次调用时才暴露问题。
+      userId = resolveUserId(cookies)
+    } catch (error) {
+      // 凭据格式错是用户可修的问题，回 400 级错误并带上原因；不要让它变成
+      // 500「请查看服务日志」——那条日志里写的正是用户需要看到的这句话。
+      return { ok: false, error: { code: 'bad-request', message: String(error?.message ?? error) } }
+    }
+    await credentials.set(GROK_CREDENTIAL_REF, cookies.trim())
+    send({ type: 'changed' })
+    return { ok: true, value: { userId } }
+  }
+  if (call.method === 'grok.credential.state') {
+    const found = await credentials.resolve(GROK_CREDENTIAL_REF)
+    const present = typeof found?.value === 'string' && found.value !== ''
+    let userId
+    if (present) { try { userId = resolveUserId(parseGrokCredential(found.value)) } catch { userId = undefined } }
+    return { ok: true, value: { present, userId } }
+  }
+  // 管理面的模型目录：即使没登录也要给出目录，控制台才有东西可展示。
+  // 这与 /v1/models 是两回事——后者只列「真能花掉一次回合」的模型，未登录的
+  // 渠道不该出现在里面（listModels 在无凭据时返回空正是为此）。
+  if (call.method === 'model.list' && call.payload?.provider === GROK_ID) {
+    const models = GROK_MODELS.map(row => ({ id: row.id, name: row.name, contextWindow: row.contextWindow, maxOutput: row.maxOutput }))
+    return { ok: true, value: { models } }
+  }
+  if (call.method === 'account.list' && call.payload?.provider === GROK_ID) {
+    const found = await credentials.resolve(GROK_CREDENTIAL_REF)
+    const present = typeof found?.value === 'string' && found.value !== ''
+    // Grok 只有一个「账号」，就是那条 Cookie；没有就返回空列表而不是报错。
+    return { ok: true, value: { accounts: present ? [{ id: 'grok-cookie', provider: GROK_ID, nickname: 'grok.com Cookie' }] : [] } }
+  }
   const route = routes.get('/api/channel-pack')
   if (!route) throw new Error('渠道管理接口未注册')
   const response = await route.fetch(new Request('http://localhost/api/channel-pack', {
@@ -151,4 +195,11 @@ parentPort.on('message', async message => {
 })
 
 apply(ctx, { disableOpencode: true })
+/**
+ * Grok 不在上游渠道包里，所以由本仓库自己注册进来（见 grok.mjs 的模块头）。
+ * 注册位置放在 apply 之后：apply 内部会注册上游那 13 个渠道，先注册躲不开它，
+ * 后注册才能共用同一个 ctx.llm —— 渠道目录、模型清单和降级链都按 provider 聚合，
+ * 所以这里注册完，`grok/*` 就自动出现在 /v1/models 与降级链的可用成员里。
+ */
+ctx.llm.registerAdapter([GROK_ID], new GrokAdapter({ credentials, logger }))
 send({ type: 'ready', providers: [...adapters.keys()] })
