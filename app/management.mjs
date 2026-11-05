@@ -110,7 +110,7 @@ function publicCombo(entry) {
 }
 
 /** 管理读写要求鉴权；登录恢复仅允许同源页面触发固定本机动作。 */
-export function createManagement({ stores, runtime, channels, info, onSettingsChanged, loginTerminal = openLoginTerminal }) {
+export function createManagement({ stores, runtime, channels, info, onSettingsChanged, loginTerminal = openLoginTerminal, trustProxy = false }) {
   let bootstrap = { token: crypto.randomBytes(32).toString('base64url'), until: Date.now() + BOOTSTRAP_MS }
   const sessions = new Map()
   let cookieName
@@ -190,7 +190,13 @@ export function createManagement({ stores, runtime, channels, info, onSettingsCh
     const method = req.method ?? 'GET'
     if (method === 'POST' && pathname === `${PREFIX}/login/terminal`) {
       // 此入口发生在登录前，必须有浏览器的同源 Origin，拒绝跨站和无来源调用。
-      if (req.headers.origin !== new URL(`http://${req.headers.host}`).origin ||
+      // 反代部署时 Host 被改写成回环，改用 X-Forwarded-Host/Proto 还原浏览器看到的源。
+      const publicHost = trustProxy && typeof req.headers['x-forwarded-host'] === 'string'
+        ? req.headers['x-forwarded-host'].split(',')[0].trim() : req.headers.host
+      const publicProto = trustProxy && typeof req.headers['x-forwarded-proto'] === 'string'
+        ? req.headers['x-forwarded-proto'].split(',')[0].trim() : 'http'
+      const expectedOrigin = new URL(`${publicProto}://${publicHost}`).origin
+      if (req.headers.origin !== expectedOrigin ||
           req.headers['sec-fetch-site'] !== 'same-origin') {
         throw fail(403, '请从本机登录页面点击获取令牌')
       }
@@ -375,7 +381,9 @@ export function createManagement({ stores, runtime, channels, info, onSettingsCh
         typeof value !== 'string' || !value.startsWith('http://')
       ))
       if (closed || !cookieName) json(res, 503, { error: '服务正在停止或启动' })
-      else if (malformedSource || structuralRejection(req) !== undefined) json(res, 403, { error: '管理接口仅允许本机同源访问' })
+      else if (malformedSource || structuralRejection(req, {
+        trustProxy, forwardedProto: req.headers['x-forwarded-proto'],
+      }) !== undefined) json(res, 403, { error: '管理接口仅允许本机同源访问' })
       else if (asset) {
         if (req.method !== 'GET' && req.method !== 'HEAD') json(res, 405, { error: '资源仅支持 GET 或 HEAD' })
         else {

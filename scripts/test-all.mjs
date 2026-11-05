@@ -31,6 +31,7 @@ const { only } = options
  */
 const suites = [
   // Pure modules: wire codecs, the failure table, the chain's commit rule.
+  ['trust-proxy', 'trust-proxy-test.mjs', []],
   ['projection', 'projection-test.mjs', []],
   ['anthropic', 'anthropic-test.mjs', []],
   ['route', 'route-test.mjs', []],

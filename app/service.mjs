@@ -239,6 +239,9 @@ export async function startService({
     runtime = createModelRuntime({ ...stores, channels, logger })
     management = createManagement({
       stores, runtime, channels,
+      // 反代部署：nginx 把 Host 改写成回环后，用 X-Forwarded-Host/Proto 判同源。
+      // 默认关闭；只在确实由可信反代暴露时开启（见 README 的服务器部署一节）。
+      trustProxy: process.env.MODELPORT_TRUST_PROXY === '1',
       info: () => ({
         product: PRODUCT, version: VERSION, dataDir,
         baseUrl: `http://${host === '::1' ? '[::1]' : host}:${listener?.port ?? requestedPort}`,

@@ -239,6 +239,32 @@ node app/cli.mjs --lan
 Host/Origin 同源校验；`--lan` 中继绑 `0.0.0.0` 但**只转发 `/v1/*`** 且用独立 `lanKey`。
 因此服务器上对外提供推理时，前面挂反向代理或开 `--lan`，管理页走 SSH 隧道。
 
+#### 前面挂反向代理时：可信反代开关
+
+服务只监听回环，所以 nginx 必须把 `Host` 改写成回环地址才能转发；但浏览器的
+`Origin` 仍是公网地址，两者对不上就会被同源校验拦成 403。此时给服务加：
+
+```bash
+MODELPORT_TRUST_PROXY=1 node app/cli.mjs
+```
+
+开启后，同源校验改用反代传回的 `X-Forwarded-Host` / `X-Forwarded-Proto` 还原浏览器
+看到的源，nginx 侧需要一并转发：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:18900;
+    proxy_set_header Host 127.0.0.1:18900;            # 服务只接受回环 Host
+    proxy_set_header X-Forwarded-Host $host;          # 浏览器实际访问的地址
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+**默认关闭**，只在「绑定只经可信反代可达」时开启：
+回环 Host 要求、跨站拒绝、API Key / 会话 Cookie 校验都不变，伪造的
+`X-Forwarded-Host` 仍必须与浏览器自己的 `Origin` 一致才能通过。如果只对外提供
+推理、不需要公网管理页，更安全的做法是不开这个开关，管理页走 SSH 隧道。
+
 ### 命令行参数
 
 | 参数 | 作用 |
@@ -257,6 +283,7 @@ Host/Origin 同源校验；`--lan` 中继绑 `0.0.0.0` 但**只转发 `/v1/*`** 
 | 变量 | 作用 |
 | --- | --- |
 | `MODELPORT_HOME` | 数据目录（等价于 `--data-dir`）；服务器上把导出的 `workbuddy-auth.*.json` 放这里 |
+| `MODELPORT_TRUST_PROXY` | 设为 `1` 时信任反向代理的 `X-Forwarded-Host`/`X-Forwarded-Proto`（见上文「可信反代开关」，默认关闭） |
 | `WORKBUDDY_AUTH_FILE` | 显式指定一份 WorkBuddy auth 文件（未加密旧文件可直接在服务器用；导出脚本也可只导这一份） |
 | `WORKBUDDY_APP_EXECUTABLE` | 加密凭据解密时，指定桌面 App 可执行文件（本机导出时用，服务器无需） |
 | `CMDC_PAK_GOOGLE_CLIENT_ID` / `CMDC_PAK_GOOGLE_CLIENT_SECRET` | Gemini 渠道自带的 OAuth 客户端 |

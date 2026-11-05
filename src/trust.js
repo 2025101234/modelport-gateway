@@ -84,7 +84,7 @@ export function connectionAdmissionView(service) {
  *   fixed diagnostic fields only; never request headers or error text
  * @returns {number|undefined}
  */
-export function rejectionFor(req, connection, onRejection) {
+export function rejectionFor(req, connection, onRejection, options = {}) {
   let decision
   try {
     // Hosts before dsh 0.1.7 publish the same decision under the older name
@@ -112,7 +112,7 @@ export function rejectionFor(req, connection, onRejection) {
     decision = { status: 503, source: 'connection', reason: 'admission-error' }
   }
   if (decision === undefined) {
-    const reason = structuralReason(req)
+    const reason = structuralReason(req, options)
     if (reason === undefined) return undefined
     decision = { status: 403, source: 'structural', reason }
   }
@@ -129,14 +129,31 @@ export function rejectionFor(req, connection, onRejection) {
  * rebinding defence via the Host header, cross-site fetch refusal, and an
  * Origin/Referer authority match.
  */
-export function structuralRejection(req) {
-  return structuralReason(req) === undefined ? undefined : 403
+export function structuralRejection(req, options = {}) {
+  return structuralReason(req, options) === undefined ? undefined : 403
 }
 
-/** Return a fixed reason without exposing caller-supplied strings. */
-function structuralReason(req) {
+/**
+ * Return a fixed reason without exposing caller-supplied strings.
+ *
+ * When `trustProxy` is set, the request arrived through a reverse proxy: the
+ * proxy rewrites `Host` to a loopback authority (because the listener only
+ * binds loopback), so the browser's real origin lives in `X-Forwarded-Host`
+ * (and `X-Forwarded-Proto`). The fence then compares Origin/Referer against
+ * that forwarded authority instead of the rewritten Host. This keeps the
+ * DNS-rebinding defence intact — a forged `X-Forwarded-Host` still has to match
+ * the browser's own Origin header — while letting a public reverse proxy serve
+ * the console. Only enable it on a bind that is reachable solely through a
+ * trusted proxy; the API Key / session cookie checks are unchanged.
+ */
+function structuralReason(req, options = {}) {
   const host = authorityOf(req.headers.host, 'http')
   if (host === null || !LOOPBACK_NAMES.has(host.hostname)) return 'host-not-loopback'
+  const forwarded = options.trustProxy === true ? firstForwarded(req.headers['x-forwarded-host']) : undefined
+  const expected = forwarded === undefined
+    ? host
+    : authorityOf(`${options.forwardedProto ?? req.headers['x-forwarded-proto'] ?? 'http'}://${forwarded}`, 'http')
+  if (expected === null) return 'forwarded-host-invalid'
   const site = String(req.headers['sec-fetch-site'] ?? '').toLowerCase()
   if (site === 'cross-site') return 'cross-site'
   for (const header of ['origin', 'referer']) {
@@ -151,11 +168,24 @@ function structuralReason(req) {
     }
     const authority = authorityOf(raw.trim())
     if (authority === null) return `${header}-invalid`
-    // The web server speaks plain http on a loopback bind, so an Origin that
-    // claims https — or any other scheme — is not this page.
-    if (authority.scheme !== host.scheme || authority.hostname !== host.hostname || authority.port !== host.port) return `${header}-mismatch`
+    // Compare scheme/hostname/port against the authority the browser actually
+    // addressed (forwarded when proxied, Host otherwise).
+    if (authority.hostname !== expected.hostname) return `${header}-mismatch`
+    if (authority.scheme !== expected.scheme) return `${header}-mismatch`
+    if ((authority.port ?? defaultPort(authority.scheme)) !== (expected.port ?? defaultPort(expected.scheme))) return `${header}-mismatch`
   }
   return undefined
+}
+
+/** Take the first (client-supplied) value of a possibly comma-joined header. */
+function firstForwarded(value) {
+  if (typeof value !== 'string') return undefined
+  const first = value.split(',')[0].trim()
+  return first === '' ? undefined : first
+}
+
+function defaultPort(scheme) {
+  return scheme === 'https' ? 443 : 80
 }
 
 /** Only the owned application page, never arbitrary custom-protocol pages. */
