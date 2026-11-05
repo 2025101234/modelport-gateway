@@ -81,6 +81,39 @@ await check('an account list is empty, not an error, while signed out', async ()
   }
 })
 
+/**
+ * WorkBuddy / CodeBuddy 现在由本仓库自有的桌面登录态适配器接管：它们不走 OAuth
+ * 弹窗，写操作必须被明确拒绝（而不是落到渠道包的旧空账号池逻辑里报「未配置
+ * 凭据」），且账号列表绝不能带出任何 token 明文。
+ */
+await check('desktop providers refuse OAuth-style writes with an actionable message', async () => {
+  for (const provider of ['workbuddy', 'buddy']) {
+    const result = await runtime.rpc({ method: 'account.create', payload: { provider } })
+    assert.equal(result.ok, false, `${provider} must refuse account.create`)
+    assert.equal(result.error.code, 'bad-request')
+    assert.match(result.error.message, /WORKBUDDY_AUTH_FILE|桌面 App/)
+  }
+})
+
+await check('desktop account.list never leaks a token and carries diagnostics', async () => {
+  for (const provider of ['workbuddy', 'buddy']) {
+    const result = await runtime.rpc({ method: 'account.list', payload: { provider } })
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.value.accounts, [])
+    assert.equal(typeof result.value.diagnostics?.region, 'string')
+    assert.equal(JSON.stringify(result.value).includes('accessToken'), false)
+  }
+})
+
+await check('workbuddy.desktop.rescan is safe on a machine with no desktop sign-in', async () => {
+  for (const provider of ['workbuddy', 'buddy']) {
+    const result = await runtime.rpc({ method: 'workbuddy.desktop.rescan', payload: { provider } })
+    assert.equal(result.ok, true)
+    assert.equal(typeof result.value.accounts, 'number')
+    assert.equal(typeof result.value.diagnostics?.region, 'string')
+  }
+})
+
 await check('a channel turn is routed by its provider prefix', () => {
   assert.equal(runtime.handles('workbuddy/default-model'), true)
   assert.equal(runtime.handles('buddy/glm-5.2'), true)

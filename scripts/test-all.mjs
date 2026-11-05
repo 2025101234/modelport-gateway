@@ -41,6 +41,7 @@ const suites = [
   ['prompt-saver', 'prompt-saver-test.mjs', []],
   ['local-optimize', 'local-optimize-test.mjs', []],
   // The service, its management API and the console build.
+  ['workbuddy-desktop', 'workbuddy-desktop-test.mjs', []],
   ['channels', 'channels-test.mjs', []],
   ['session', 'session-test.mjs', []],
   ['standalone', 'standalone-test.mjs', []],

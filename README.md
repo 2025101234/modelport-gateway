@@ -96,7 +96,13 @@ API Key 保存在：~/.modelport/settings.json
 自己的登录页 → 登录完回到控制台，页面每 2.5 秒轮询一次，授权完成后显示「已接入」，
 它的模型随即并入清单。
 
-这 13 个渠道都是这个流程。**Gemini 例外**，见下方「Gemini 需要自带 OAuth 客户端」；**Grok 也例外**，它靠粘贴 Cookie，见「Grok：唯一需要粘贴 Cookie 的渠道」。
+其中 11 家是这个流程。三种例外：
+
+- **WorkBuddy / CodeBuddy**（`workbuddy` 国际版、`buddy` 国内版）**不弹登录页**：它们复用
+  本机 WorkBuddy 桌面端已登录的凭据文件，选「重新检测登录态」即可，详见
+  「WorkBuddy / CodeBuddy：复用桌面端登录态」。
+- **Gemini** 需要自带 OAuth 客户端，见下方「Gemini 需要自带 OAuth 客户端」。
+- **Grok** 靠粘贴 Cookie，见「Grok：唯一需要粘贴 Cookie 的渠道」。
 
 ### 第六步：把模型接给你的 Agent
 
@@ -161,6 +167,61 @@ Grok 和上面 13 家不一样，这一点值得先讲清楚，免得你以为�
 > 2. grok.com **免费账号的对话配额很紧**。接进降级链后，它更可能的表现是频繁 `429`，
 >    而不是稳定兜底。需要稳定供应就用 xAI 官方 API Key——那是另一条完全不同的路径。
 
+### WorkBuddy / CodeBuddy：复用桌面端登录态
+
+这两家不走渠道包原来的「弹窗 OAuth + 模拟 UA」反代：上游已限制非官方客户端，
+新版桌面端还把 auth 文件的 token 加密成 AES 信封，那条链路已失效。现在改为
+照 [dsh-connect-workbuddy](https://github.com/dingminhua/dsh-connect-workbuddy)（MIT）的方式，
+**只读本机 WorkBuddy 桌面端自己的登录态文件**，用桌面客户端的身份与 wire 头请求上游。
+实现放在 `app/channels/workbuddy-desktop/`，来源与第三方署名见 [NOTICE.md](NOTICE.md)。
+
+- `buddy` = 国内版 / CodeBuddy（`copilot.tencent.com`），`workbuddy` = 国际版
+  WorkBuddy AI（`www.workbuddy.ai`）。按凭据里的 `domain` 自动分流，两个区域可同时在线。
+- 控制台里这两家是**只读 + 重新检测**：不弹登录页、不添加/删除账号、不逐模型开关。
+  账号由桌面 App 管理，凭据文件**只读、绝不回写**；页面拿不到任何 token。
+- 凭据解析有三级顺序，本机开发与无桌面端的服务器部署共用同一份代码：
+  1. `WORKBUDDY_AUTH_FILE`：显式指向一份 auth 文件（headless 首选）；
+  2. 平台默认的桌面 App auth 目录（本机自动发现，含时间戳备份）；
+  3. 数据目录里的 `workbuddy-auth.<region>.json`：刷新结果，也充当服务器上搬运来的凭据种子。
+- 用桌面 App 身份 UA 读 `/v3/config` 拿模型目录（CLI 身份的答复是严格子集），
+  聊天请求带会话三元组、渠道指纹改写与 11128 自愈重试；token 过期走
+  `X-Refresh-Token` 续期，结果写回本仓库自己的数据目录。
+
+> ⚠️ 这是**非官方**客户端接口的反代。上游随时可能改协议或收紧限制，不提供长期可用承诺。
+
+#### 部署到无桌面端的服务器
+
+服务器没有桌面 App，读不到本机登录态；做法是把**已登录机器上的凭据**搬过来：
+
+```sh
+# 1) 在「已登录 WorkBuddy 桌面端」的机器上找到并打包凭据目录
+#    macOS：  ~/Library/Application Support/CodeBuddyExtension
+#    Linux：  ${XDG_CONFIG_HOME:-~/.config}/CodeBuddyExtension
+#    Windows：%LOCALAPPDATA%\CodeBuddyExtension 以及 %APPDATA%\CodeBuddyExtension
+tar czf codebuddy-cred.tgz -C <上面的父目录> CodeBuddyExtension
+
+# 2) 经加密通道（scp / 私网）传到服务器，解到数据目录，收紧权限
+mkdir -p ~/.modelport
+tar xzf codebuddy-cred.tgz -C ~/.modelport
+chmod 600 ~/.modelport/workbuddy-auth.*.json ~/.modelport/CodeBuddyExtension/Data/Public/auth/*.info 2>/dev/null
+
+# 3) 用 WORKBUDDY_AUTH_FILE 指向那份 auth 文件后启动
+WORKBUDDY_AUTH_FILE=~/.modelport/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info node app/cli.mjs
+```
+
+也可以直接把一份**未加密**的 `workbuddy-auth.cn.json` / `workbuddy-auth.global.json`
+放进数据目录，无需设置环境变量。凭据文件等同于账号，别放进会被打包或提交的目录。
+
+> 🔐 **加密凭据（WorkBuddy 5.6.0 起）无法靠搬运解决**：新版桌面端把 token 字段加密了，
+> 密钥由 App 的原生绑定在运行时现取、不落盘。没有 App 的服务器上即使把加密文件拷过去
+> 也读不出来（控制台会明确报「凭据已加密但取不到密钥」，而不是静默当作未登录）。
+> 可行做法：从凭据未加密的机器搬运，或在该服务器上安装 App 并用
+> `WORKBUDDY_APP_EXECUTABLE` 指定其可执行文件以取得密钥。
+
+对外暴露沿用现有机制：`startService` 只绑回环地址，管理 API 也仅限回环 +
+Host/Origin 同源校验；`--lan` 中继绑 `0.0.0.0` 但**只转发 `/v1/*`** 且用独立 `lanKey`。
+因此服务器上对外提供推理时，前面挂反向代理或开 `--lan`，管理页走 SSH 隧道。
+
 ### 命令行参数
 
 | 参数 | 作用 |
@@ -174,7 +235,14 @@ Grok 和上面 13 家不一样，这一点值得先讲清楚，免得你以为�
 > 早先还有一个 `--probe`（启用可用性探测）。探测是随免费车道来的，车道移除后这个
 > 开关已经删掉，传它会被当成未知选项报错。
 
-环境变量：`MODELPORT_HOME`、`CMDC_PAK_GOOGLE_CLIENT_ID`、`CMDC_PAK_GOOGLE_CLIENT_SECRET`。
+环境变量：
+
+| 变量 | 作用 |
+| --- | --- |
+| `MODELPORT_HOME` | 数据目录（等价于 `--data-dir`） |
+| `WORKBUDDY_AUTH_FILE` | 显式指定 WorkBuddy 桌面端 auth 文件路径（服务器部署首选） |
+| `WORKBUDDY_APP_EXECUTABLE` | 加密凭据解密时，指定桌面 App 可执行文件 |
+| `CMDC_PAK_GOOGLE_CLIENT_ID` / `CMDC_PAK_GOOGLE_CLIENT_SECRET` | Gemini 渠道自带的 OAuth 客户端 |
 
 ---
 
@@ -264,16 +332,20 @@ curl http://127.0.0.1:18900/v1/chat/completions \
 | 概览 | 可接入模型数、Token 用量、最近 7 天曲线、各渠道的模型来源 |
 | 模型清单 | 全部模型、能力标签、上下文/输出上限、单模型实测、按偏好隐藏 |
 | 用量统计 | 累计 Token、每日趋势、按模型分页明细、首字延迟与生成速度 |
-| **账号渠道** | 13 家渠道：浏览器登录、账号池、积分余额与一键领取、逐模型开关；外加 Grok（粘贴 Cookie） |
+| **账号渠道** | 11 家浏览器登录、账号池、积分余额与一键领取、逐模型开关；WorkBuddy / CodeBuddy 只读桌面端登录态；外加 Grok（粘贴 Cookie） |
 | 路由链路 | 降级链与轮询链的增删改，成员排序，链路能力交集预览 |
 | API 接入 | 两个 Base URL、Key 查看/复制/轮换、局域网地址与 LAN Key、六组客户端配方、协议矩阵 |
 | 服务设置 | 推理开关、断流恢复、刷新间隔、局域网开关与端口 |
 
 ### 账号渠道怎么工作
 
-每个渠道点「添加账号」会打开该渠道自己的浏览器登录页；授权完成后，渠道包在后台
+常规渠道点「添加账号」会打开该渠道自己的浏览器登录页；授权完成后，渠道包在后台
 把凭据写进本机 `channel-credentials.json`（`0600`），页面始终拿不到明文。凭据有
 refresh token 的会自动续期，没有的在过期后需要重新登录。
+
+**WorkBuddy / CodeBuddy 例外**：这两家复用本机桌面端的登录态文件（只读），凭据由
+WorkBuddy 桌面 App 管理，控制台只做「重新检测登录态」与只读展示。详见
+「WorkBuddy / CodeBuddy：复用桌面端登录态」。Grok 则靠粘贴 Cookie。
 
 关掉的模型不会出现在 `/v1/models` 里；未登录的渠道不贡献任何可路由模型，
 所以清单里不会出现「选了必然报错」的条目。
@@ -295,8 +367,12 @@ refresh token 的会自动续期，没有的在过期后需要重新登录。
 ## 数据与安全
 
 - 默认数据目录 `~/.modelport`，权限 `0700`；`settings.json` 权限 `0600`。
-- **不读取、不导入任何宿主应用的配置或凭据**，也不向任何服务器上传数据。
+- 不读取、不导入任何 **DSH 宿主**应用的配置或凭据，也不向任何服务器上传数据。
+  **唯一的例外是 WorkBuddy / CodeBuddy**：这两家按设计**只读**本机（或服务器上搬运来的）
+  WorkBuddy 桌面端 auth 文件——只读、绝不回写桌面 App 的文件；加密凭据的密钥只在进程内存中
+  派生，不落盘、不进日志。控制台与所有管理接口都拿不到任何 token 明文。
 - API Key 是本机生成的 `mp-` + 24 字节 base64url，保存在 `settings.json` 的 `forwardKey` 字段。
+- 刷新得到的 WorkBuddy token 写进数据目录的 `workbuddy-auth.<region>.json`（`0600`，原子写）。
 - 管理接口只监听回环地址，写操作要求会话 Cookie 或 Bearer Key，并校验 `Host` / `Origin` 同源。
 - 同一个数据目录只能起一个实例：Windows 用命名管道互斥，跨平台用 `service.lock` 归属校验，
   只有能证明旧进程已退出（`ESRCH`）时才回收陈旧锁。
@@ -333,8 +409,12 @@ node scripts/e2e-check.mjs                  # 端到端验收（替身渠道，�
 - **模型只来自你登录的渠道**：装好之后要先登录，没有任何开箱即用的免费额度。
   这是移除免费车道与聚合渠道后的直接结果。
 - **账号渠道走的是各家客户端接口，不是官方开放 API**：上游一改版就可能失效。
-  其中 WorkBuddy / CodeBuddy 已被上游项目于 2026-10-21 移除，本仓库保留的是移除前的版本，
-  不提供稳定性承诺。详见 [NOTICE.md](NOTICE.md)。
+  其中 WorkBuddy / CodeBuddy 已被上游项目于 2026-10-21 移除，本仓库保留的是移除前的
+  渠道包注册；这两家现已由本仓库自有的桌面登录态适配器接管，见
+  「WorkBuddy / CodeBuddy：复用桌面端登录态」与 [NOTICE.md](NOTICE.md)。
+- **WorkBuddy / CodeBuddy 需要本机（或搬运来的）桌面端登录态**：桌面端未登录、
+  或服务器上的凭据文件缺失/加密且取不到密钥时，这两家不贡献任何可路由模型。
+  上游已开始限制非官方客户端请求，随时可能失效；服务器部署的加密凭据限制见上文。
 - **Gemini 渠道需要自带 OAuth 客户端**（环境变量见上），因为硬编码的那对凭据已被清空。
 - 渠道的可达性只有一种来源：这次的目录刷新有没有把它列出来。没有可用性探测，
   所以控制台也不再显示「已探测可用 / 限流中」这类状态。

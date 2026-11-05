@@ -8,6 +8,35 @@ import {
   collectGatewayModels, collectGatewayEffortViews, toOpenAiModels,
 } from './business.mjs'
 import { GrokAdapter, GROK_ID, GROK_CREDENTIAL_REF, GROK_MODELS, parseGrokCredential, resolveUserId } from './grok.mjs'
+import { WorkBuddyDesktopAdapter, providerForRegion } from './workbuddy-desktop/adapter.mjs'
+
+/**
+ * WorkBuddy / CodeBuddy 由本仓库自己实现（见 workbuddy-desktop/ 的模块头）。
+ *
+ * 这两个 provider 原本由上游渠道包的 `BuddyAuth` + `registerBuddyLlm` 提供，
+ * 走「自己弹窗 OAuth 登录 + 按模型族猜 UA」的旧反代方式，现已失效，改为复用
+ * 本机 / 搬运来的 WorkBuddy 桌面端登录态。
+ *
+ * ⚠️ 注册必须发生在 `apply(ctx)` **之前**：渠道包内部的
+ * `registerAdapterIdempotent()` 在 provider id 重复时会「保留先注册者并跳过」，
+ * 而 worker 自己的 registerAdapter 对重复 id 是**抛错**。所以先把新适配器登记
+ * 进 `adapters`，再让渠道包尝试注册时命中下面这个能被它识别的重复错误文本，
+ * 它就会安静地跳过 buddy/workbuddy，其余 12 家照常注册。
+ *
+ * 代价：渠道包里那两套旧 BuddyAuth 实例仍会被创建（无凭据、空账号池，定时
+ * 刷新是 no-op），并且不会发起任何网络请求——这是不动 2.88MB pack.js 与
+ * build-channels.mjs 的既定取舍，记录在此以免日后误以为它们还在工作。
+ */
+const desktopAdapters = new Map()
+for (const region of ['cn', 'global']) {
+  const provider = providerForRegion(region)
+  const adapter = new WorkBuddyDesktopAdapter({
+    region, provider, storeDir: workerData.dataDir,
+    logger: Object.fromEntries(['info', 'warn', 'error'].map(level => [level, message =>
+      parentPort.postMessage({ type: 'log', level, message: String(message) })])),
+  })
+  desktopAdapters.set(provider, adapter)
+}
 
 const cleanups = []
 const adapters = new Map()
@@ -38,7 +67,11 @@ const ctx = {
   llm: {
     registerAdapter(providers, adapter) {
       for (const provider of providers) {
-        if (adapters.has(provider)) throw new Error(`渠道重复注册：${provider}`)
+        if (adapters.has(provider)) {
+          // 文本必须带 "already registered"：渠道包的 isDuplicateRegistrationError
+          // 只认这类措辞，命中后它才会跳过而不是把整个 apply() 抛掉。
+          throw new Error(`渠道 ${provider} already registered（保留先注册者）`)
+        }
         adapters.set(provider, adapter)
       }
     },
@@ -124,6 +157,38 @@ async function rpc(call, signal) {
     // Grok 只有一个「账号」，就是那条 Cookie；没有就返回空列表而不是报错。
     return { ok: true, value: { accounts: present ? [{ id: 'grok-cookie', provider: GROK_ID, nickname: 'grok.com Cookie' }] : [] } }
   }
+  // WorkBuddy / CodeBuddy 的凭据来自桌面 App 登录态（或服务器上搬运的凭据文件），
+  // 不是 channel-credentials.json 里的 OAuth 账号。渠道包的 RPC 对它们一律不适用，
+  // 必须在透传前拦下：能如实回答的只读操作就回答，写操作明确拒绝，绝不静默落入
+  // 旧逻辑（那会去读空账号池、报一句与真实原因无关的「未配置凭据」）。
+  const desktop = desktopAdapters.get(call.payload?.provider)
+  if (desktop !== undefined) {
+    const method = call.method
+    if (method === 'account.list') {
+      await desktop.rescanNow()
+      return { ok: true, value: { accounts: desktop.publicAccounts(), diagnostics: desktop.publicDiagnostics() } }
+    }
+    if (method === 'model.list') {
+      const models = await desktop.publicCatalog()
+      return { ok: true, value: { models, diagnostics: desktop.publicDiagnostics() } }
+    }
+    if (method === 'workbuddy.desktop.rescan') {
+      const result = await desktop.rescanNow()
+      send({ type: 'changed' })
+      return { ok: true, value: { accounts: result.accounts.length, diagnostics: desktop.publicDiagnostics() } }
+    }
+    if (method === 'credits.balances') return { ok: true, value: { accounts: [] } }
+    if (/^(account|login|model|credits)\./.test(method)) {
+      return {
+        ok: false,
+        error: {
+          code: 'bad-request',
+          message: 'WorkBuddy / CodeBuddy 的登录态由本机桌面 App 或搬运来的凭据文件管理，'
+            + '无需在此添加账号；请在 WorkBuddy 桌面端登录，或设置 WORKBUDDY_AUTH_FILE 后点「重新检测登录态」。',
+        },
+      }
+    }
+  }
   const route = routes.get('/api/channel-pack')
   if (!route) throw new Error('渠道管理接口未注册')
   const response = await route.fetch(new Request('http://localhost/api/channel-pack', {
@@ -132,6 +197,39 @@ async function rpc(call, signal) {
   }))
   const reply = await response.json()
   return reply.result
+}
+
+/**
+ * WorkBuddy / CodeBuddy 桌面登录态渠道的受限直通分支。
+ *
+ * 这两个 provider 的上游本就是 OpenAI 形状的 `/v2/chat/completions`，插件的
+ * `prepareChatBody` 也是直接在 OpenAI body 上加工。因此这里**不**走渠道包的
+ * `toGenerateOptions` 二次投影（它会把消息转成 harness gateway 形状，丢工具调用
+ * 与多模态信息），而是按请求来源拼出一份干净的 OpenAI chat body 交给新客户端。
+ */
+function desktopBody(request, provider, model) {
+  const source = request.responsesBody ?? request.openAi
+  let messages
+  if (source && Array.isArray(source.messages)) messages = source.messages
+  else if (source && Array.isArray(source.input)) messages = toChatMessages(source.input)
+  else messages = toChatMessages(Array.isArray(request.messages) ? request.messages : [])
+  const body = { model, messages }
+  if (source && typeof source === 'object') {
+    for (const key of ['tools', 'tool_choice', 'temperature', 'top_p', 'max_tokens', 'max_completion_tokens', 'stop', 'stream']) {
+      if (source[key] !== undefined) body[key] = source[key]
+    }
+    if (typeof source.max_output_tokens === 'number' && body.max_tokens === undefined) body.max_tokens = source.max_output_tokens
+    if (typeof source.reasoning_effort === 'string') body.reasoning_effort = source.reasoning_effort
+    if (typeof source.instructions === 'string' && source.instructions !== '') {
+      body.messages = [{ role: 'system', content: source.instructions }, ...body.messages]
+    }
+  } else {
+    const harness = harnessBody(request)
+    for (const key of ['tools', 'max_tokens', 'temperature', 'reasoning_effort']) {
+      if (harness[key] !== undefined) body[key] = harness[key]
+    }
+  }
+  return body
 }
 
 /**
@@ -155,6 +253,16 @@ async function complete(request, id, signal) {
   const model = request.model.slice(slash + 1)
   // 禁用模型和供应商必须同时影响统一 API，不能只隐藏页面。
   if (!(await ctx.llm.listModels(provider)).some(row => row.id === model)) throw Object.assign(new Error('模型不存在或已停用'), { statusCode: 404 })
+  // 桌面登录态渠道走直通：它的上游是 OpenAI 形状，绕过渠道包的二次投影。
+  const desktop = desktopAdapters.get(provider)
+  if (desktop !== undefined) {
+    const body = desktopBody(request, provider, model)
+    for await (const chunk of desktop.streamBody(body, signal)) {
+      if (signal.aborted) throw new Error('请求已取消')
+      send({ type: 'chunk', id, chunk })
+    }
+    return
+  }
   const body = { ...(request.responsesBody ?? request.openAi ?? harnessBody(request)), model: request.model }
   const resolved = await ctx.llm.resolveModel(provider, model, signal)
   const effort = normalizeReasoningEffort(request.responses ? responsesReasoningEffort(body) : body.reasoning_effort, resolved, provider, model,
@@ -194,12 +302,13 @@ parentPort.on('message', async message => {
   } finally { controllers.delete(id) }
 })
 
+// 先注册本仓库自有的两个桌面登录态适配器，让渠道包跳过它俩（见文件头注释）。
+for (const [provider, adapter] of desktopAdapters) ctx.llm.registerAdapter([provider], adapter)
 apply(ctx, { disableOpencode: true })
 /**
  * Grok 不在上游渠道包里，所以由本仓库自己注册进来（见 grok.mjs 的模块头）。
- * 注册位置放在 apply 之后：apply 内部会注册上游那 13 个渠道，先注册躲不开它，
- * 后注册才能共用同一个 ctx.llm —— 渠道目录、模型清单和降级链都按 provider 聚合，
- * 所以这里注册完，`grok/*` 就自动出现在 /v1/models 与降级链的可用成员里。
+ * 注册位置放在 apply 之后：apply 内部会注册上游其余渠道，后注册才能共用同一个
+ * ctx.llm —— 渠道目录、模型清单和降级链都按 provider 聚合。
  */
 ctx.llm.registerAdapter([GROK_ID], new GrokAdapter({ credentials, logger }))
 send({ type: 'ready', providers: [...adapters.keys()] })

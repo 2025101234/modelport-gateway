@@ -105,6 +105,53 @@ MIT 许可证与版权行见 `vendor/channel-pack/LICENSE`（与上游一致）�
 执行代码从 `src/adapter.js` 搬进 `src/core/combo.js`，提交规则（正文与工具调用算递交、
 思考不算、已递交就不再换环）逐条保留，并由 `scripts/combo-advance-test.mjs` 覆盖。
 
+## 后来又改了什么：WorkBuddy / CodeBuddy 反代
+
+上游渠道包里 `BuddyAuth` + `registerBuddyLlm` 走的是「自己在弹窗里 OAuth 登录 → 凭据写进
+`channel-credentials.json` → 按模型族猜 UA 直连」。上游已限制非官方客户端，且新版桌面端
+把 auth 文件的 token 加密成 AES-256-GCM 字段信封，这条链路失效。按使用者要求，这两家改为
+**[dsh-connect-workbuddy](https://github.com/dingminhua/dsh-connect-workbuddy)** 的方式：
+只读本机（或服务器上搬运来的）WorkBuddy 桌面端登录态文件，用桌面客户端自己的身份与
+wire 头请求上游。
+
+新增 `app/channels/workbuddy-desktop/`（本仓库自写，MIT 兼容方式独立实现，未整文件复制）：
+
+| 文件 | 内容 |
+| --- | --- |
+| `at-rest.mjs` | 加密字段信封的 AES-256-GCM 解密、AAD 转录、密钥派生与 App 可执行文件探测 |
+| `auth.mjs` | 三级凭据发现、auth 文档解析、按 `domain` 分流区域、headless 诊断 |
+| `store.mjs` | 刷新结果写回本仓库数据目录（0600 原子写），绝不回写桌面 App |
+| `catalog.mjs` | `/v3/config` 模型解析与兜底目录（数据来自渠道包 `buddy.ts` 的兜底表） |
+| `upstream.mjs` | 目录读取、聊天请求头/请求体加工、SSE→归一化 chunk、token 刷新、错误分类 |
+| `adapter.mjs` | `LlmAdapter` 契约实现、多账号选择与续期 |
+
+接线在 `app/channels/worker.mjs` 与 `app/ui/channels.tsx`：两个适配器在渠道包 `apply()`
+之前注册（利用其 `registerAdapterIdempotent` 的「保留先注册者并跳过」语义），推理走受限
+直通分支，管理面 RPC 对这两家先拦截。渠道包内两套旧 `BuddyAuth` 实例残留但空转，不改动
+`vendor/channel-pack/pack.js` 与 `scripts/build-channels.mjs`。
+
+### 第三方来源与许可
+
+- **[dingminhua/dsh-connect-workbuddy](https://github.com/dingminhua/dsh-connect-workbuddy)**
+  — MIT，`Copyright (c) 2026 LaoDing`。本仓库参照其 `src/at-rest.ts`、`src/auth.ts`、
+  `src/upstream.ts` 的算法与 wire 行为独立实现连接内核所需子集。
+- 该项目的 `src/upstream.ts` 声明其 wire behavior 参照
+  **[corrinehu/dsh-workbuddy-connect](https://github.com/corrinehu/dsh-workbuddy-connect)**
+  （MIT，`Copyright (c) 2026 Corrine Hu`）与
+  **[Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)**（MIT）；
+  `src/at-rest.ts` 的 DSML 解析参照 **[hawklithm/workbuddy2api](https://github.com/hawklithm/workbuddy2api)**
+  （MIT）。这些项目的版权归各自作者所有。
+- 兜底模型表的数据来自 `vendor/channel-pack/pack.js`（MIT，版权见该目录 `NOTICE.md`）。
+
+以上项目均为 MIT，其版权行在此如实保留。本仓库对这些第三方代码的使用是
+「参照算法与协议、独立实现」，不是分发其源码副本。
+
+### 明确未移植的部分（M2）
+
+设备 turing token / machine id、积分倍率与活动徽标、逐模型图片核验表与默认推理档、
+每日签到、生图与视频、CLI 路线、插件式 `workbuddy-global` 命名、插件自带的 loopback shim。
+本项目自身已是 OpenAI / Anthropic 兼容网关，无需再套一层随机端口 + secret 的 shim。
+
 ## 上游第三方声明
 
 内置渠道包的原始来源说明保留在 `vendor/channel-pack/NOTICE.md`。
