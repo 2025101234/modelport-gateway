@@ -49,13 +49,13 @@ const SMS_PROVIDERS = new Set(['trae'])
  */
 const COOKIE_PROVIDERS = new Set(['grok'])
 /**
- * 登录态由桌面 App 管理（或服务器上搬运来的凭据文件），不走 OAuth 弹窗。
- * 这两家在控制台里是「只读 + 重新检测」，没有添加/删除账号、短信验证、
- * 积分领取、逐模型开关这些操作。
+ * 这两家支持三类凭据来源：桌面 App 登录态（只读）、网页/扫码登录（写入本仓库
+ * vault）、服务器上搬运来的凭据文件。控制台里「添加账号」走网页登录，
+ * 「重新检测」扫桌面文件；vault 账号可删除、可导出，桌面文件永远只读。
  */
 const DESKTOP_PROVIDERS = new Set(['buddy', 'workbuddy'])
 
-type Account = { id: string; provider: string; nickname?: string; enabled?: boolean; expiresAt?: number; refreshable?: boolean; region?: string; domain?: string; source?: string; file?: string; encrypted?: boolean }
+type Account = { id: string; provider: string; nickname?: string; enabled?: boolean; expiresAt?: number; refreshable?: boolean; region?: string; domain?: string; source?: string; file?: string; encrypted?: boolean; vaultAccountId?: string; deletable?: boolean }
 type ModelRow = { id: string; name?: string; disabled?: boolean; dead?: boolean }
 type ChannelState = { state: string; error?: string }
 type Diagnostics = {
@@ -133,22 +133,6 @@ export function Channels({ summary, host, active }: { summary: Summary; host: Ho
   }
 
   const login = (provider: string) => run(`login:${provider}`, async () => {
-    // 桌面登录态渠道没有 OAuth 弹窗：按钮改成「重新检测本机/搬运来的凭据文件」。
-    if (DESKTOP_PROVIDERS.has(provider)) {
-      const result = await rpc<{ accounts: number; diagnostics: Diagnostics }>('workbuddy.desktop.rescan', { provider }, 30000)
-      if (!mounted.current) return
-      if (result.diagnostics?.encryptedCredentialUnsupported === true) {
-        setError('凭据已加密但取不到解密密钥：请在本机安装 WorkBuddy 桌面 App，或用 WORKBUDDY_APP_EXECUTABLE 指定它；'
-          + '服务器部署请改搬运未加密的凭据文件。')
-      } else {
-        setMessage(result.accounts > 0
-          ? `已检测到 ${result.accounts} 个登录态账号，模型已并入清单。`
-          : '没有检测到登录态。请在本机登录 WorkBuddy 桌面端；服务器上部署请用 WORKBUDDY_AUTH_FILE 指向凭据文件。')
-      }
-      await load(provider)
-      await host.refresh()
-      return
-    }
     // Cookie 类渠道没有 OAuth 弹窗可开，按钮的点法是「展开粘贴框」，不是去登录。
     if (COOKIE_PROVIDERS.has(provider)) {
       setMessage('把 grok.com 的 Cookie 粘贴到下面，保存后即可调用。')
@@ -162,6 +146,40 @@ export function Channels({ summary, host, active }: { summary: Summary; host: Ho
     setSmsSent(false); setSmsCode('')
     setMessage('已打开登录页。完成授权后回到这里，会自动检测。')
     await host.refresh()
+  })
+
+  /** 重新检测桌面 App 登录态 / 搬运来的凭据文件（网页登录账号不受影响）。 */
+  const rescanDesktop = (provider: string) => run(`rescan:${provider}`, async () => {
+    const result = await rpc<{ accounts: number; diagnostics: Diagnostics }>('workbuddy.desktop.rescan', { provider }, 30000)
+    if (!mounted.current) return
+    if (result.diagnostics?.encryptedCredentialUnsupported === true) {
+      setError('凭据已加密但取不到解密密钥：请在本机安装 WorkBuddy 桌面 App，或用 WORKBUDDY_APP_EXECUTABLE 指定它；'
+        + '服务器部署请改用网页登录后导出。')
+    } else {
+      setMessage(result.accounts > 0
+        ? `已检测到 ${result.accounts} 个登录态账号，模型已并入清单。`
+        : '没有检测到桌面端登录态。也可以点「添加账号」用网页登录，或在服务器上用 WORKBUDDY_AUTH_FILE 指向凭据文件。')
+    }
+    await load(provider)
+    await host.refresh()
+  })
+
+  /** 导出网页登录的账号成 workbuddy-auth.<region>.json，供服务器部署使用。 */
+  const exportVaultAccount = (provider: string) => run(`export:${provider}`, async () => {
+    const result = await rpc<{ exported: { filename: string; content: string } | null }>('workbuddy.desktop.export', { provider }, 30000)
+    if (!mounted.current) return
+    if (result.exported === null) {
+      setMessage('当前区域没有网页登录的账号可导出。请先点「添加账号」完成网页登录。')
+      return
+    }
+    const blob = new Blob([result.exported.content], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = result.exported.filename
+    anchor.click()
+    URL.revokeObjectURL(url)
+    setMessage(`已导出 ${result.exported.filename}。这是明文登录态：请 chmod 600、只走加密通道传输、别提交到 git。`)
   })
 
   /** Grok 的凭据保存：校验在服务端做，这里只负责把结果说清楚。 */
@@ -180,13 +198,13 @@ export function Channels({ summary, host, active }: { summary: Summary; host: Ho
     if (pendingId === '' || !active) return
     let cancelled = false
     const timer = window.setInterval(() => {
-      void rpc<{ done: boolean; success?: boolean }>('login.poll', { accountId: pendingId, provider: selected })
+      void rpc<{ done: boolean; success?: boolean; error?: string }>('login.poll', { accountId: pendingId, provider: selected })
         .then(result => {
           if (cancelled || !mounted.current) return
           if (result.done === true) {
             window.clearInterval(timer)
             setPendingId(''); setLoginUrl('')
-            if (result.success === false) setError('登录未完成，请重试。')
+            if (result.success === false) setError(result.error ?? '登录未完成，请重试。')
             else { setMessage('已接入。'); void load(selected); void host.refresh() }
           }
         })
@@ -221,7 +239,8 @@ export function Channels({ summary, host, active }: { summary: Summary; host: Ho
   const removeAccount = (account: Account) => {
     if (!window.confirm(`移除账号 ${account.nickname ?? account.id}？该账号的凭据会一并删除。`)) return
     void run(`del:${account.id}`, async () => {
-      await rpc('account.delete', { provider: selected, accountId: account.id })
+      // vault 账号要传它自己的 24 位 id；其余渠道沿用 account.id。
+      await rpc('account.delete', { provider: selected, accountId: account.vaultAccountId ?? account.id })
       await load(selected); await host.refresh()
     }, '账号已移除。')
   }
@@ -255,8 +274,11 @@ export function Channels({ summary, host, active }: { summary: Summary; host: Ho
           <div className="channel-card-head"><div><h2>{CHANNEL_NAMES[selected] ?? selected}</h2><p>{CHANNEL_NOTES[selected] ?? ''}</p></div>
             <div className="channel-card-actions">
               <Button variant="outline" onClick={() => login(selected)} disabled={busy !== '' || pendingId !== ''}>
-                {busy === `login:${selected}` ? <LoaderCircle size={14} className="spinning" /> : <KeyRound size={14} />}
-                {isDesktop ? '重新检测登录态' : '添加账号'}</Button>
+                {busy === `login:${selected}` ? <LoaderCircle size={14} className="spinning" /> : <KeyRound size={14} />}添加账号</Button>
+              {isDesktop && <Button variant="ghost" onClick={() => rescanDesktop(selected)} disabled={busy !== ''}>
+                {busy === `rescan:${selected}` ? <LoaderCircle size={14} className="spinning" /> : <RefreshCw size={14} />}重新检测</Button>}
+              {isDesktop && <Button variant="ghost" onClick={() => exportVaultAccount(selected)} disabled={busy !== ''}>
+                <KeyRound size={14} />导出账号</Button>}
               <Button variant="ghost" onClick={() => void load(selected)} disabled={busy !== ''}><RefreshCw size={14} />刷新</Button>
             </div>
           </div>
@@ -266,19 +288,21 @@ export function Channels({ summary, host, active }: { summary: Summary; host: Ho
             <div><Wallet size={15} /><span>余额</span><strong>{credits.length > 0 ? '已读取' : '—'}</strong></div>
           </div>
           {isDesktop && <div className="channel-login">
-            <p><KeyRound size={14} />这一渠道复用本机 WorkBuddy 桌面端的登录态，不弹 OAuth 登录页。凭据文件只读，页面拿不到任何 token。</p>
+            <p><KeyRound size={14} />三种凭据来源共用一份清单：<strong>添加账号</strong>走网页/扫码登录（写入本机 vault，可删除、可导出）；
+              <strong>重新检测</strong>扫描本机桌面 App 的登录态文件（只读，绝不回写）；
+              服务器上还可放搬运来的 <code>workbuddy-auth.*.json</code>。</p>
             <p className="channel-hint">
-              本机：登录 WorkBuddy 桌面 App 后点「重新检测登录态」即可。
-              无桌面端的服务器：把已登录机器上的**未加密**凭据文件搬过来，用 <code>WORKBUDDY_AUTH_FILE</code>
-              指向它（或放进数据目录的 <code>workbuddy-auth.cn.json</code> / <code>workbuddy-auth.global.json</code>），
-              再用 <code>chmod 600</code> 收紧权限。
+              服务器部署：点「添加账号」完成网页登录后，点「导出账号」下载
+              <code>workbuddy-auth.{diagnostics.region === 'global' ? 'global' : 'cn'}.json</code>，
+              上传到服务器数据目录并 <code>chmod 600</code> 即可，无需安装桌面 App。
+              导出物是明文登录态，只走加密通道、别提交到 git。
             </p>
             <p className="channel-hint">
               检测到的凭据：{accounts.length > 0
-                ? accounts.map(account => `${account.nickname ?? account.id}（${account.region === 'global' ? '国际版' : '国内版'}${account.domain ? ` · ${account.domain}` : ''}${account.file ? ` · ${account.file}` : ''}${account.encrypted ? ' · 已加密' : ''}）`).join('；')
+                ? accounts.map(account => `${account.nickname ?? account.id}（${account.source === 'vault' ? '网页登录' : account.source === 'store' ? '搬运文件' : '桌面端'}${account.region === 'global' ? ' · 国际版' : ' · 国内版'}${account.domain ? ` · ${account.domain}` : ''}${account.encrypted ? ' · 已加密' : ''}）`).join('；')
                 : '无'}
               {diagnostics.explicitFileMissing === true && ' · WORKBUDDY_AUTH_FILE 指向的文件不存在'}
-              {diagnostics.encryptedCredentialUnsupported === true && ' · 加密凭据取不到密钥（需本机安装桌面 App 或设置 WORKBUDDY_APP_EXECUTABLE）'}
+              {diagnostics.encryptedCredentialUnsupported === true && ' · 加密凭据取不到密钥（可改用网页登录，或设置 WORKBUDDY_APP_EXECUTABLE）'}
               {Array.isArray(diagnostics.unreadableEncryptedFiles) && diagnostics.unreadableEncryptedFiles.length > 0
                 && ` · 无法解密的文件：${diagnostics.unreadableEncryptedFiles.join('、')}`}
             </p>
@@ -315,9 +339,10 @@ export function Channels({ summary, host, active }: { summary: Summary; host: Ho
               {!isDesktop && <Button variant="ghost" onClick={claim} disabled={busy !== ''}>{busy === 'claim' ? <LoaderCircle size={14} className="spinning" /> : <Wallet size={14} />}一键领取</Button>}</div>
             {accounts.map(account => <div key={account.id} className="channel-account">
               <span className="channel-account-name">{account.nickname ?? account.id}</span>
+              {account.source === 'vault' && <Badge tone="success">网页登录</Badge>}
               {account.expiresAt ? <span className="channel-account-exp">到期 {new Date(account.expiresAt).toLocaleDateString('zh-CN')}</span> : null}
               {account.refreshable ? <Badge tone="success">可续期</Badge> : <Badge tone="warning">需重登</Badge>}
-              {!isDesktop && <Button variant="ghost" aria-label="移除账号" onClick={() => removeAccount(account)} disabled={busy !== ''}><Trash2 size={14} /></Button>}
+              {(!isDesktop || account.deletable === true) && <Button variant="ghost" aria-label="移除账号" onClick={() => removeAccount(account)} disabled={busy !== ''}><Trash2 size={14} /></Button>}
             </div>)}
           </div>}
         </Card>

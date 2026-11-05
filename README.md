@@ -98,8 +98,9 @@ API Key 保存在：~/.modelport/settings.json
 
 其中 11 家是这个流程。三种例外：
 
-- **WorkBuddy / CodeBuddy**（`workbuddy` 国际版、`buddy` 国内版）**不弹登录页**：它们复用
-  本机 WorkBuddy 桌面端已登录的凭据文件，选「重新检测登录态」即可，详见
+- **WorkBuddy / CodeBuddy**（`workbuddy` 国际版、`buddy` 国内版）支持三种凭据来源：
+  **网页/扫码登录**（点「添加账号」，与其余渠道一样的授权页流程）、**本机桌面 App
+  登录态**（点「重新检测登录态」）、以及**服务器上搬运来的凭据文件**。详见
   「WorkBuddy / CodeBuddy：复用桌面端登录态」。
 - **Gemini** 需要自带 OAuth 客户端，见下方「Gemini 需要自带 OAuth 客户端」。
 - **Grok** 靠粘贴 Cookie，见「Grok：唯一需要粘贴 Cookie 的渠道」。
@@ -167,23 +168,27 @@ Grok 和上面 13 家不一样，这一点值得先讲清楚，免得你以为�
 > 2. grok.com **免费账号的对话配额很紧**。接进降级链后，它更可能的表现是频繁 `429`，
 >    而不是稳定兜底。需要稳定供应就用 xAI 官方 API Key——那是另一条完全不同的路径。
 
-### WorkBuddy / CodeBuddy：复用桌面端登录态
+### WorkBuddy / CodeBuddy：网页登录 + 桌面登录态
 
 这两家不走渠道包原来的「弹窗 OAuth + 模拟 UA」反代：上游已限制非官方客户端，
 新版桌面端还把 auth 文件的 token 加密成 AES 信封，那条链路已失效。现在改为
 照 [dsh-connect-workbuddy](https://github.com/dingminhua/dsh-connect-workbuddy)（MIT）的方式，
-**只读本机 WorkBuddy 桌面端自己的登录态文件**，用桌面客户端的身份与 wire 头请求上游。
-实现放在 `app/channels/workbuddy-desktop/`，来源与第三方署名见 [NOTICE.md](NOTICE.md)。
+用桌面客户端的身份与 wire 头请求上游。实现放在 `app/channels/workbuddy-desktop/`，
+来源与第三方署名见 [NOTICE.md](NOTICE.md)。
 
 - `buddy` = 国内版 / CodeBuddy（`copilot.tencent.com`），`workbuddy` = 国际版
   WorkBuddy AI（`www.workbuddy.ai`）。按凭据里的 `domain` 自动分流，两个区域可同时在线。
-- 控制台里这两家是**只读 + 重新检测**：不弹登录页、不添加/删除账号、不逐模型开关。
-  账号由桌面 App 管理，凭据文件**只读、绝不回写**；页面拿不到任何 token。
-- 凭据解析有三级顺序，本机开发与无桌面端的服务器部署共用同一份代码：
-  1. `WORKBUDDY_AUTH_FILE`：显式指向一份 auth 文件（headless 首选）；
-  2. 平台默认的桌面 App auth 目录（本机自动发现，含时间戳备份）；
-  3. 数据目录里的 `workbuddy-auth.<region>.json`：刷新结果，也充当服务器上搬运来的凭据种子。
-- 用桌面 App 身份 UA 读 `/v3/config` 拿模型目录（CLI 身份的答复是严格子集），
+- **网页/扫码登录**：控制台点「添加账号」→ 浏览器打开授权页 → 登录完成后自动轮询到
+  凭据。走 `/v2/plugin/auth/state` → `auth/token` → `login/account` 三步端点，会话绑定
+  区域与域名（国际版 `workbuddy.ai` / `codebuddy.ai` 两把钥匙不通用），10 分钟超时。
+  凭据写入本仓库自己的 vault（`dataDir/workbuddy-vault/<region>/*.json`，0600），
+  **一账号一文件**，可删除、可导出；桌面 App 的文件始终只读、永不改动。
+- **桌面 App 登录态**：点「重新检测登录态」扫描本机登录态文件；加密信封由已安装 App
+  的原生绑定在运行时取密钥解密，密钥只在内存中、不落盘。
+- 四类凭据来源**合并成同一份清单**：`WORKBUDDY_AUTH_FILE` 显式文件 → 平台默认桌面
+  auth 目录（含时间戳备份）→ 数据目录的 `workbuddy-auth.<region>.json`（刷新结果 /
+  搬运种子）→ 网页登录的 vault。同区域多账号按到期更晚者优先，失败可换号。
+- 用 App 身份 UA 读 `/v3/config` 拿模型目录（CLI 身份的答复是严格子集），
   聊天请求带会话三元组、渠道指纹改写与 11128 自愈重试；token 过期走
   `X-Refresh-Token` 续期，结果写回本仓库自己的数据目录。
 
@@ -191,46 +196,44 @@ Grok 和上面 13 家不一样，这一点值得先讲清楚，免得你以为�
 
 #### 部署到无桌面端的服务器：电脑登录 → 导出 → 上传
 
-服务器没有桌面 App，读不到本机登录态；推荐做法正是**先在电脑上登录，再打包上传**。
-但有一个决定性的坑，先看这条：
-
-> 🔐 **不要直接打包桌面 App 的 `*.info` 文件**：WorkBuddy 5.6.0 起把 token 字段
-> 加密成 AES-256-GCM 信封，密钥由 App 的原生绑定在运行时现取、不落盘。没有 App 的
-> 服务器上，加密文件拷过去也解不开（控制台会明确报「凭据已加密但取不到密钥」）。
->
-> 所以正确姿势是：**在有 App 的电脑上先把登录态解密导出成明文文件，再上传**。
-> `scripts/export-workbuddy-auth.mjs` 就是干这件事的。
+服务器没有桌面 App；**最简单的一条路是网页登录 + 控制台导出**：
 
 ```sh
-# 1) 在电脑上：装好 WorkBuddy 桌面 App 并登录（国内版/国际版可同时登录）
+# 1) 在电脑（或任何能开浏览器的机器）上：控制台 → 账号渠道 →
+#    选 WorkBuddy / CodeBuddy → 点「添加账号」→ 在授权页完成登录
+#    （国内版与国际版各登一次即可，两个区域的账号互不干扰）
 
-# 2) 在电脑上：导出成未加密的 workbuddy-auth.<region>.json
-node scripts/export-workbuddy-auth.mjs --out ./workbuddy-export
-#    输出 workbuddy-auth.cn.json（国内版 buddy）与
-#          workbuddy-auth.global.json（国际版 workbuddy），各取到期最晚的账号。
-#    脚本会自动找 App 拿密钥解密；找不到会给出可操作的提示。
-#    若 App 装在非常规位置，先设 WORKBUDDY_APP_EXECUTABLE 指向其可执行文件。
-#    只想导出某一份文件里的登录态，可设 WORKBUDDY_AUTH_FILE 指向该 .info。
+# 2) 同一页点「导出账号」：浏览器下载 workbuddy-auth.<region>.json
+#    （global = 国际版，cn = 国内版）。这就是明文登录态，含 refresh token。
 
 # 3) 经加密通道上传到服务器的数据目录（默认 ~/.modelport，或 MODELPORT_HOME）
-scp ./workbuddy-export/workbuddy-auth.*.json user@server:~/.modelport/
-ssh user@server 'chmod 600 ~/.modelport/workbuddy-auth.*.json'
+scp ~/Downloads/workbuddy-auth.*.json user@server:~/.modelport/
+ssh user@server 'mkdir -p ~/.modelport && chmod 600 ~/.modelport/workbuddy-auth.*.json'
 
 # 4) 在服务器上启动（无需安装桌面 App，也无需 WORKBUDDY_AUTH_FILE）
 node app/cli.mjs --lan
 ```
 
-导出的文件里带 refresh token，服务器上的网关会自动续期并写回自己的数据目录，
-不需要反复重传。凭据文件**等同于账号**：只经加密通道传输、`chmod 600`、
-别放进会被 git 提交/打包/同步网盘的目录，用完后删掉电脑上那份导出物。
+导出的文件带 refresh token，服务器会自动续期并写回自己的数据目录，不用反复重传。
+也可以在服务器上直接点「添加账号」做网页登录 —— 那样连上传都省了，只要服务器
+能打开授权页、浏览器能回连本机控制台即可。
 
-如果你手上正好是一份**未加密**的旧版 auth 文件，也可以直接走
-`WORKBUDDY_AUTH_FILE=/path/to/workbuddy-desktop.info node app/cli.mjs`
-（或把同形状的 `workbuddy-auth.<region>.json` 直接放进数据目录），无需导出脚本。
+> 🔐 **如果改用桌面 App 登录态，则不要直接打包 `*.info` 文件**：5.6.0 起 token 被
+> AES-256-GCM 加密，密钥由 App 运行时现取、不落盘，无 App 的服务器解不开。
+> 这条路径请用 `scripts/export-workbuddy-auth.mjs` 在**有 App 的电脑**上先把登录态
+> 解密导出，再上传：
+>
+> ```sh
+> node scripts/export-workbuddy-auth.mjs --out ./workbuddy-export
+> # 若 App 装在非常规位置，先设 WORKBUDDY_APP_EXECUTABLE；只想导某一文件可设 WORKBUDDY_AUTH_FILE
+> scp ./workbuddy-export/workbuddy-auth.*.json user@server:~/.modelport/
+> ```
+>
+> 控制台会明确报「凭据已加密但取不到密钥」，而不是静默当作未登录。
 
-> ℹ️ 当前实现**没有网页端 / 扫码登录**：这两家只支持「读桌面 App 登录态」与
-> 「读搬运来的凭据文件」两条路，控制台里的添加账号等写操作会明确拒绝。
-> 上游插件的扫码/网页授权登录与账号池 vault 属于未移植范围。
+凭据文件**等同于账号**：只经加密通道传输、`chmod 600`、别放进会被 git 提交/打包/
+同步网盘的目录，用完后删掉中转的那份。手上若正好是一份**未加密**的旧版 auth 文件，
+也可直接 `WORKBUDDY_AUTH_FILE=/path/to/workbuddy-desktop.info node app/cli.mjs`。
 
 对外暴露沿用现有机制：`startService` 只绑回环地址，管理 API 也仅限回环 +
 Host/Origin 同源校验；`--lan` 中继绑 `0.0.0.0` 但**只转发 `/v1/*`** 且用独立 `lanKey`。
@@ -349,7 +352,7 @@ curl http://127.0.0.1:18900/v1/chat/completions \
 | 概览 | 可接入模型数、Token 用量、最近 7 天曲线、各渠道的模型来源 |
 | 模型清单 | 全部模型、能力标签、上下文/输出上限、单模型实测、按偏好隐藏 |
 | 用量统计 | 累计 Token、每日趋势、按模型分页明细、首字延迟与生成速度 |
-| **账号渠道** | 11 家浏览器登录、账号池、积分余额与一键领取、逐模型开关；WorkBuddy / CodeBuddy 只读桌面端登录态；外加 Grok（粘贴 Cookie） |
+| **账号渠道** | 11 家浏览器登录、账号池、积分余额与一键领取、逐模型开关；WorkBuddy / CodeBuddy 支持网页登录 + 桌面登录态 + 账号导出；外加 Grok（粘贴 Cookie） |
 | 路由链路 | 降级链与轮询链的增删改，成员排序，链路能力交集预览 |
 | API 接入 | 两个 Base URL、Key 查看/复制/轮换、局域网地址与 LAN Key、六组客户端配方、协议矩阵 |
 | 服务设置 | 推理开关、断流恢复、刷新间隔、局域网开关与端口 |
@@ -360,9 +363,10 @@ curl http://127.0.0.1:18900/v1/chat/completions \
 把凭据写进本机 `channel-credentials.json`（`0600`），页面始终拿不到明文。凭据有
 refresh token 的会自动续期，没有的在过期后需要重新登录。
 
-**WorkBuddy / CodeBuddy 例外**：这两家复用本机桌面端的登录态文件（只读），凭据由
-WorkBuddy 桌面 App 管理，控制台只做「重新检测登录态」与只读展示。详见
-「WorkBuddy / CodeBuddy：复用桌面端登录态」。Grok 则靠粘贴 Cookie。
+**WorkBuddy / CodeBuddy 例外**：网页/扫码登录的凭据写入本仓库自己的 vault（可删除、
+可导出）；本机桌面 App 的登录态文件只读、绝不回写；服务器上还可放搬运来的凭据
+文件。三类来源合并成同一份清单。详见「WorkBuddy / CodeBuddy：网页登录 + 桌面登录态」。
+Grok 则靠粘贴 Cookie。
 
 关掉的模型不会出现在 `/v1/models` 里；未登录的渠道不贡献任何可路由模型，
 所以清单里不会出现「选了必然报错」的条目。

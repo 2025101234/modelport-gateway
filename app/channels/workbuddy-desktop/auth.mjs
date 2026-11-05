@@ -4,16 +4,19 @@
  * 本模块按 dsh-connect-workbuddy（MIT, Copyright (c) 2026 LaoDing）的
  * `src/auth.ts` 与 `src/upstream.ts` 独立重写，覆盖连接内核所需的子集。
  *
- * 凭据解析有三级顺序，让「本机开发」与「无桌面端的服务器部署」共用同一份代码：
+ * 凭据解析有四级来源，**合并成同一份账号清单**，让本机开发、网页登录与无
+ * 桌面端的服务器部署共用同一套代码：
  *
  *   1. `WORKBUDDY_AUTH_FILE` 显式绝对路径（headless 首选）——指定时连同目录下的
  *      时间戳备份一起扫描；
  *   2. 平台默认的桌面 App auth 目录（本机自动发现）；
- *   3. `dataDir/workbuddy-auth.<region>.json` —— 本仓库自己保存的刷新结果，
- *      同时也是「从已登录机器搬运凭据到服务器」的种子文件。
+ *   3. `dataDir/workbuddy-auth.<region>.json` —— 刷新结果，也是「从已登录机器
+ *      搬运凭据到服务器」的种子文件；
+ *   4. `dataDir/workbuddy-vault/<region>/*.json` —— 网页/扫码登录写入的账号。
  *
- * 扫描到的每个账号按 `regionOf(domain)` 分流：国际版 `workbuddy.ai` /
- * `codebuddy.ai` → `global`，其余 → `cn`。两个区域可同时在线。
+ * 桌面 App 的文件始终只读；vault 与 store 由本仓库自己写。所有来源的账号按
+ * `regionOf(domain)` 分流：国际版 `workbuddy.ai` / `codebuddy.ai` → `global`，
+ * 其余 → `cn`。两个区域可同时在线，同 id 的账号取到期更晚者。
  *
  * ⚠️ 这是非官方客户端接口的一部分，上游随时可能改协议或收紧限制。
  *
@@ -26,6 +29,7 @@ import {
   credentialField, hasEncryptedCredentialFields, normalizeAtRestKey,
   ENCRYPTED_CREDENTIAL_CODE, WORKBUDDY_AUTH_FILE_ENV,
 } from './at-rest.mjs'
+import { listAccountFiles } from './vault.mjs'
 
 /** App 当前登录文件（5.7.x 起国际版写 `-ai` 变体），按优先级排列。 */
 export const WORKBUDDY_LIVE_FILENAMES = Object.freeze([
@@ -190,7 +194,8 @@ function accountKey(credential) {
  *        不传时用「向已安装 App 询问」的 provider。
  * @returns {Promise<{accounts: Array, diagnostics: object}>}
  *
- * `accounts` 每项：`{ id, region, credential, filePath, source, refreshable }`。
+ * `accounts` 每项：`{ id, region, credential, filePath, source, refreshable,
+ * vaultAccountId? }`。`source` 为 `desktop` / `store` / `vault`。
  * `diagnostics` 记录 `explicitFileMissing` / `unreadableEncryptedFiles` /
  * `encryptedCredentialUnsupported` 等可诊断事实，供控制台如实展示。
  */
@@ -199,6 +204,8 @@ export async function scanCredentials(options = {}) {
     env = process.env, platform = process.platform, home = homedir(), storeDir = '',
     keyProvider, readFile = fs.readFileSync, fileExists = fs.existsSync,
     candidates = credentialCandidates,
+    // 注入式：默认从本仓库 vault 目录读，离线测试可替换。
+    vaultEntries = storeDir === '' ? [] : listAccountFiles(storeDir),
   } = options
   const diagnostics = {
     explicitFileMissing: false,
@@ -218,6 +225,17 @@ export async function scanCredentials(options = {}) {
     try { text = readFile(file, 'utf8') } catch { continue }
     diagnostics.candidates.push({ file: tier === 'explicit' ? file : path.basename(file), tier })
     readable.push({ file, tier, text, encrypted: hasEncryptedCredentialFields(text) })
+  }
+  // 网页/扫码登录写入的 vault 账号：与桌面文件走同一套解析/分流/去重逻辑。
+  for (const entry of vaultEntries) {
+    let text
+    try { text = readFile(entry.file, 'utf8') } catch { continue }
+    diagnostics.candidates.push({ file: path.basename(entry.file), tier: 'vault' })
+    readable.push({
+      file: entry.file, tier: 'vault', text,
+      encrypted: hasEncryptedCredentialFields(text),
+      vaultAccountId: entry.accountId, vaultRegion: entry.region,
+    })
   }
 
   const needsKey = readable.some(row => row.encrypted)
@@ -241,14 +259,19 @@ export async function scanCredentials(options = {}) {
     const existing = seen.get(id)
     // 同一账号的多份文件：留 expiresAt 更晚的那份（插件既有语义：双凭据取到期更晚者）。
     if (existing !== undefined && existing.credential.expiresAtMs >= credential.expiresAtMs) continue
+    // vault 账号的目录 key 就是它的区域；domain 缺失时以目录为准。
+    const region = row.tier === 'vault' && credential.domain === ''
+      && (row.vaultRegion === 'cn' || row.vaultRegion === 'global')
+      ? row.vaultRegion : regionOf(credential.domain)
     const entry = {
       id,
-      region: regionOf(credential.domain),
+      region,
       credential,
       filePath: row.file,
-      source: row.tier === 'store' ? 'store' : 'desktop',
+      source: row.tier === 'vault' ? 'vault' : row.tier === 'store' ? 'store' : 'desktop',
       refreshable: typeof credential.refreshToken === 'string' && credential.refreshToken !== '',
       encrypted: row.encrypted,
+      ...row.tier === 'vault' ? { vaultAccountId: row.vaultAccountId } : {},
     }
     seen.set(id, entry)
     const at = accounts.findIndex(candidate => candidate.id === id)

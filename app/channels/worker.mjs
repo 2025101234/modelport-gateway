@@ -157,16 +157,23 @@ async function rpc(call, signal) {
     // Grok 只有一个「账号」，就是那条 Cookie；没有就返回空列表而不是报错。
     return { ok: true, value: { accounts: present ? [{ id: 'grok-cookie', provider: GROK_ID, nickname: 'grok.com Cookie' }] : [] } }
   }
-  // WorkBuddy / CodeBuddy 的凭据来自桌面 App 登录态（或服务器上搬运的凭据文件），
-  // 不是 channel-credentials.json 里的 OAuth 账号。渠道包的 RPC 对它们一律不适用，
-  // 必须在透传前拦下：能如实回答的只读操作就回答，写操作明确拒绝，绝不静默落入
-  // 旧逻辑（那会去读空账号池、报一句与真实原因无关的「未配置凭据」）。
+  // WorkBuddy / CodeBuddy 由本仓库自己的适配器接管。凭据有四类来源（桌面 App
+  // 登录态、搬运的 store 文件、网页登录写入的 vault、刷新结果），统一由
+  // scanCredentials 合并；渠道包的空账号池 RPC 对它们一律不适用，必须在透传前
+  // 拦下，否则会报一句与真实原因无关的「未配置凭据」。
   const desktop = desktopAdapters.get(call.payload?.provider)
   if (desktop !== undefined) {
     const method = call.method
     if (method === 'account.list') {
       await desktop.rescanNow()
-      return { ok: true, value: { accounts: desktop.publicAccounts(), diagnostics: desktop.publicDiagnostics() } }
+      return {
+        ok: true,
+        value: {
+          accounts: desktop.publicAccounts(),
+          vaultAccounts: desktop.vaultAccounts(),
+          diagnostics: desktop.publicDiagnostics(),
+        },
+      }
     }
     if (method === 'model.list') {
       const models = await desktop.publicCatalog()
@@ -177,14 +184,42 @@ async function rpc(call, signal) {
       send({ type: 'changed' })
       return { ok: true, value: { accounts: result.accounts.length, diagnostics: desktop.publicDiagnostics() } }
     }
+    // 网页 / 扫码登录：起会话 → 控制台打开授权页 → 每 2.5 秒轮询 → 成功后写 vault。
+    if (method === 'account.create') {
+      const result = await desktop.startLogin({ base: call.payload?.base })
+      if (result.error !== undefined) {
+        return { ok: false, error: { code: 'bad-request', message: result.error } }
+      }
+      return { ok: true, value: { accountId: result.loginId, loginUrl: result.loginUrl, expiresIn: result.expiresIn } }
+    }
+    if (method === 'login.poll') {
+      const loginId = call.payload?.accountId
+      if (typeof loginId !== 'string' || loginId === '') {
+        return { ok: true, value: { done: true, success: false, error: '缺少登录会话 id' } }
+      }
+      const result = await desktop.pollLogin(loginId)
+      if (result.success === true) send({ type: 'changed' })
+      return { ok: true, value: result }
+    }
+    if (method === 'account.delete') {
+      const result = await desktop.removeAccount(call.payload?.accountId)
+      send({ type: 'changed' })
+      return { ok: true, value: result }
+    }
+    // 导出网页登录的账号成服务器可用的 workbuddy-auth.<region>.json。
+    // 返回的是文件内容（明文登录态），只在已鉴权的本机管理会话里可取。
+    if (method === 'workbuddy.desktop.export') {
+      const exported = desktop.exportAccounts()
+      return { ok: true, value: { exported } }
+    }
     if (method === 'credits.balances') return { ok: true, value: { accounts: [] } }
     if (/^(account|login|model|credits)\./.test(method)) {
       return {
         ok: false,
         error: {
           code: 'bad-request',
-          message: 'WorkBuddy / CodeBuddy 的登录态由本机桌面 App 或搬运来的凭据文件管理，'
-            + '无需在此添加账号；请在 WorkBuddy 桌面端登录，或设置 WORKBUDDY_AUTH_FILE 后点「重新检测登录态」。',
+          message: '该操作不适用于 WorkBuddy / CodeBuddy：这两家的登录态由桌面 App、'
+            + '网页登录或搬运来的凭据文件管理，模型目录也不在此逐项开关。',
         },
       }
     }

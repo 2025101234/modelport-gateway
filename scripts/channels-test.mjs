@@ -82,27 +82,45 @@ await check('an account list is empty, not an error, while signed out', async ()
 })
 
 /**
- * WorkBuddy / CodeBuddy 现在由本仓库自有的桌面登录态适配器接管：它们不走 OAuth
- * 弹窗，写操作必须被明确拒绝（而不是落到渠道包的旧空账号池逻辑里报「未配置
- * 凭据」），且账号列表绝不能带出任何 token 明文。
+ * WorkBuddy / CodeBuddy 由本仓库自有的适配器接管：支持网页登录（account.create
+ * 起会话），凭据写入自己的 vault，与桌面登录态合并。账号列表绝不能带出 token。
+ * 这里不触发真实 account.create（那会连上游）；登录链路的离线覆盖在
+ * workbuddy-desktop-test.mjs 里用注入的 fetch 完成。
  */
-await check('desktop providers refuse OAuth-style writes with an actionable message', async () => {
-  for (const provider of ['workbuddy', 'buddy']) {
-    const result = await runtime.rpc({ method: 'account.create', payload: { provider } })
-    assert.equal(result.ok, false, `${provider} must refuse account.create`)
-    assert.equal(result.error.code, 'bad-request')
-    assert.match(result.error.message, /WORKBUDDY_AUTH_FILE|桌面 App/)
-  }
-})
-
 await check('desktop account.list never leaks a token and carries diagnostics', async () => {
   for (const provider of ['workbuddy', 'buddy']) {
     const result = await runtime.rpc({ method: 'account.list', payload: { provider } })
     assert.equal(result.ok, true)
     assert.deepEqual(result.value.accounts, [])
     assert.equal(typeof result.value.diagnostics?.region, 'string')
+    assert.ok(Array.isArray(result.value.vaultAccounts))
     assert.equal(JSON.stringify(result.value).includes('accessToken'), false)
   }
+})
+
+await check('desktop login.poll with an unknown session terminates with a readable error', async () => {
+  for (const provider of ['workbuddy', 'buddy']) {
+    const result = await runtime.rpc({ method: 'login.poll', payload: { provider, accountId: 'wbo_unknown' } })
+    assert.equal(result.ok, true)
+    assert.equal(result.value.done, true)
+    assert.equal(result.value.success, false)
+    assert.match(result.value.error, /会话|session/)
+  }
+})
+
+await check('desktop export with no web-login account returns null, not an error', async () => {
+  for (const provider of ['workbuddy', 'buddy']) {
+    const result = await runtime.rpc({ method: 'workbuddy.desktop.export', payload: { provider } })
+    assert.equal(result.ok, true)
+    assert.equal(result.value.exported, null)
+  }
+})
+
+await check('desktop account.delete rejects a malformed id without touching the filesystem', async () => {
+  await assert.rejects(
+    runtime.rpc({ method: 'account.delete', payload: { provider: 'workbuddy', accountId: '../evil' } }),
+    /账号 id 非法|非法/,
+  )
 })
 
 await check('workbuddy.desktop.rescan is safe on a machine with no desktop sign-in', async () => {

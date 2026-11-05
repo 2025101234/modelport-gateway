@@ -33,6 +33,11 @@ import {
   chatStream, fetchModels, refreshToken, CLIENT_UA, PRODUCT_UA,
 } from '../app/channels/workbuddy-desktop/upstream.mjs'
 import { ownDocument, writeOwnCredential } from '../app/channels/workbuddy-desktop/store.mjs'
+import {
+  saveAccount, listAccountFiles, accountSummary, exportVault, deleteAccount,
+  vaultDir, isAccountId,
+} from '../app/channels/workbuddy-desktop/vault.mjs'
+import { createOAuthSessions, oauthBillingBase, expiryMs, OAUTH_LOGIN_TIMEOUT_MS } from '../app/channels/workbuddy-desktop/oauth.mjs'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { WorkBuddyDesktopAdapter, providerForRegion } from '../app/channels/workbuddy-desktop/adapter.mjs'
@@ -613,6 +618,226 @@ await check('export script reports an actionable error when there is no sign-in'
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /没有检测到可用的 WorkBuddy 登录态/)
   assert.match(result.stderr, /WORKBUDDY_AUTH_FILE/)
+})
+
+// ── 11. 网页 / 扫码登录（OAuth 三步端点） ─────────────────────────────────────
+/** 构造一个按顺序应答 auth/state → auth/token → login/account 的替身 fetch。 */
+function oauthFetch({ pendingFirst = true, snakeCase = false, profile = true } = {}) {
+  const calls = []
+  let pollCount = 0
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, method: init?.method })
+    const json = (obj, status = 200) => ({
+      ok: status >= 200 && status < 300, status,
+      text: async () => JSON.stringify(obj),
+    })
+    if (url.includes('/auth/state')) {
+      return json({ code: 0, data: { state: 'ST-1', authUrl: 'https://www.workbuddy.ai/login?state=ST-1' } })
+    }
+    if (url.includes('/auth/token')) {
+      pollCount += 1
+      if (pendingFirst && pollCount === 1) return json({ code: 11217, msg: 'token not ready' })
+      return json({ code: 0, data: snakeCase
+        ? { access_token: 'web-access', refresh_token: 'web-refresh', domain: 'www.workbuddy.ai', expires_in: 3600 }
+        : { accessToken: 'web-access', refreshToken: 'web-refresh', domain: 'www.workbuddy.ai', expiresIn: 3600 } })
+    }
+    if (url.includes('/login/account')) {
+      if (!profile) throw new Error('profile endpoint down')
+      return json({ code: 0, data: { uid: 'web-uid', nickname: '网页账号', uin: '12345', domain: 'www.workbuddy.ai' } })
+    }
+    throw new Error(`unexpected oauth url: ${url}`)
+  }
+  return { fetchImpl, calls, get pollCount() { return pollCount } }
+}
+
+await check('oauthBillingBase pins the region and honours the international brand domain', () => {
+  assert.equal(oauthBillingBase('cn'), 'https://www.codebuddy.cn')
+  assert.equal(oauthBillingBase('global'), 'https://www.workbuddy.ai')
+  assert.equal(oauthBillingBase('global', 'https://www.codebuddy.ai/'), 'https://www.codebuddy.ai')
+  assert.ok(OAUTH_LOGIN_TIMEOUT_MS >= 600_000)
+})
+
+await check('expiryMs accepts seconds, milliseconds and relative TTL', () => {
+  assert.equal(expiryMs({ expiresAt: 1700000000 }, ['expiresAt'], ['expiresIn']), 1700000000000)
+  assert.equal(expiryMs({ expiresAt: 1700000000000 }, ['expiresAt'], ['expiresIn']), 1700000000000)
+  const ttl = expiryMs({ expiresIn: 60 }, ['expiresAt'], ['expiresIn'])
+  assert.ok(ttl >= Date.now() + 59_000 && ttl <= Date.now() + 61_000)
+})
+
+await check('oauth start -> pending poll -> success, with camelCase fields', async () => {
+  const { fetchImpl, calls } = oauthFetch({ pendingFirst: true })
+  const sessions = createOAuthSessions({ fetchImpl })
+  const started = await sessions.start('global')
+  assert.ok(started.loginId.startsWith('wbo_'))
+  assert.equal(started.loginUrl, 'https://www.workbuddy.ai/login?state=ST-1')
+  assert.equal(sessions.size, 1)
+  const pending = await sessions.poll(started.loginId, 'global')
+  assert.equal(pending.done, false, 'a 11217 busy answer must not end the login')
+  const result = await sessions.poll(started.loginId, 'global')
+  assert.equal(result.done, true)
+  assert.equal(result.account.credential.accessToken, 'web-access')
+  assert.equal(result.account.credential.refreshToken, 'web-refresh')
+  assert.equal(result.account.account.nickname, '网页账号')
+  assert.equal(result.account.region, 'global')
+  assert.equal(sessions.size, 0, 'a finished session is removed')
+  assert.ok(calls.some(call => call.url.includes('/login/account')))
+})
+
+await check('oauth tolerates snake_case token fields and a missing profile endpoint', async () => {
+  const { fetchImpl } = oauthFetch({ pendingFirst: false, snakeCase: true, profile: false })
+  const sessions = createOAuthSessions({ fetchImpl })
+  const started = await sessions.start('global')
+  const result = await sessions.poll(started.loginId, 'global')
+  assert.equal(result.done, true)
+  assert.equal(result.account.credential.accessToken, 'web-access')
+  assert.equal(result.account.credential.refreshToken, 'web-refresh')
+  assert.equal(result.account.account.uid, '', 'a failed profile call must not fail the login')
+})
+
+await check('oauth refuses a poll from the wrong region before any network call', async () => {
+  const { fetchImpl, calls } = oauthFetch({ pendingFirst: false })
+  const sessions = createOAuthSessions({ fetchImpl })
+  const started = await sessions.start('global')
+  const before = calls.length
+  const result = await sessions.poll(started.loginId, 'cn')
+  assert.equal(result.done, true)
+  assert.match(result.error, /区域/)
+  assert.equal(calls.length, before, 'no network request may happen on a wrong-region poll')
+})
+
+await check('oauth times out a stuck login', async () => {
+  const { fetchImpl } = oauthFetch({ pendingFirst: true })
+  let clock = 1_000_000
+  const sessions = createOAuthSessions({ fetchImpl, now: () => clock })
+  const started = await sessions.start('global')
+  clock += OAUTH_LOGIN_TIMEOUT_MS + 1
+  const result = await sessions.poll(started.loginId, 'global')
+  assert.equal(result.done, true)
+  assert.match(result.error, /超时/)
+  assert.equal(sessions.size, 0)
+})
+
+await check('oauth start reports an upstream refusal instead of throwing', async () => {
+  const sessions = createOAuthSessions({ fetchImpl: async () => { throw new Error('network down') } })
+  const result = await sessions.start('cn')
+  assert.match(result.error, /无法连接/)
+})
+
+// ── 12. vault：网页登录账号的存储、脱敏、删除与导出 ──────────────────────────
+await check('vault saves a web-login account with 0600 and lists it redacted', () => {
+  const storeDir = path.join(temp, 'vault-store')
+  fs.mkdirSync(storeDir, { recursive: true })
+  const { accountId } = saveAccount(storeDir, 'global', {
+    accessToken: 'vault-token', refreshToken: 'vault-refresh', domain: 'www.workbuddy.ai',
+    uid: 'vault-uid', nickname: 'Vault 账号', expiresAtMs: Date.now() + 3600_000,
+  })
+  assert.equal(isAccountId(accountId), true)
+  assert.equal(listAccountFiles(storeDir).length, 1)
+  if (process.platform !== 'win32') {
+    const file = path.join(vaultDir(storeDir, 'global'), `${accountId}.json`)
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+  }
+  const summary = accountSummary(storeDir)[0]
+  assert.equal(summary.nickname, 'Vault 账号')
+  assert.equal(summary.hasAccessToken, true)
+  assert.equal(summary.hasRefreshToken, true)
+  assert.equal(JSON.stringify(summary).includes('vault-token'), false, 'summary must never contain a token')
+  assert.equal(isAccountId('../evil'), false)
+})
+
+await check('vault is merged into scanCredentials as a first-class credential source', async () => {
+  const storeDir = path.join(temp, 'vault-scan')
+  fs.mkdirSync(storeDir, { recursive: true })
+  saveAccount(storeDir, 'global', {
+    accessToken: 'merged-token', refreshToken: 'merged-ref', domain: 'www.workbuddy.ai', uid: 'merged-uid',
+    expiresAtMs: Date.now() + 3600_000,
+  })
+  const result = await scanCredentials({ env: {}, platform: 'linux', home: temp, storeDir, keyProvider: async () => undefined })
+  const vault = result.accounts.find(row => row.source === 'vault')
+  assert.ok(vault, 'vault account must appear in the merged roster')
+  assert.equal(vault.region, 'global')
+  assert.equal(vault.credential.accessToken, 'merged-token')
+  assert.ok(vault.vaultAccountId, 'vault accounts carry their own id for deletion')
+  assert.equal(result.diagnostics.encryptedCredentialUnsupported, false)
+})
+
+await check('vault export produces a server-ready workbuddy-auth.global.json', () => {
+  const storeDir = path.join(temp, 'vault-export')
+  fs.mkdirSync(storeDir, { recursive: true })
+  saveAccount(storeDir, 'global', {
+    accessToken: 'export-token', refreshToken: 'export-ref', domain: 'www.workbuddy.ai', uid: 'e-uid',
+    expiresAtMs: Date.now() + 3600_000,
+  })
+  const exported = exportVault(storeDir).global
+  assert.equal(exported.filename, 'workbuddy-auth.global.json')
+  const doc = JSON.parse(exported.content)
+  assert.equal(doc.auth.accessToken, 'export-token')
+  assert.equal(doc.auth.refreshToken, 'export-ref', 'refresh token must travel so the server can renew')
+  assert.equal(doc.auth.domain, 'www.workbuddy.ai')
+  assert.equal(exportVault(path.join(temp, 'vault-empty')).global, undefined)
+})
+
+await check('deleteAccount removes only the vault copy and never a desktop file', () => {
+  const storeDir = path.join(temp, 'vault-delete')
+  fs.mkdirSync(storeDir, { recursive: true })
+  const { accountId } = saveAccount(storeDir, 'cn', {
+    accessToken: 'del-token', refreshToken: 'del-ref', domain: 'copilot.tencent.com', uid: 'd-uid',
+  })
+  const desktopFile = path.join(storeDir, 'workbuddy-desktop.info')
+  fs.writeFileSync(desktopFile, JSON.stringify({ auth: { accessToken: 'desktop-token', domain: 'copilot.tencent.com' }, account: { uid: 'desk-1' } }))
+  assert.equal(deleteAccount(storeDir, 'cn', accountId), true)
+  assert.equal(deleteAccount(storeDir, 'cn', accountId), false)
+  assert.ok(fs.existsSync(desktopFile), 'deleting a vault account must not touch the desktop auth file')
+})
+
+// ── 13. adapter 的登录 / 账号管理接线 ────────────────────────────────────────
+await check('adapter polls a web login, writes the vault and exposes a deletable account', async () => {
+  const storeDir = path.join(temp, 'adapter-weblogin')
+  fs.mkdirSync(storeDir, { recursive: true })
+  const { fetchImpl } = oauthFetch({ pendingFirst: false })
+  const adapter = new WorkBuddyDesktopAdapter({
+    region: 'global', provider: 'workbuddy', storeDir, logger: quiet,
+    env: { WORKBUDDY_AUTH_FILE: path.join(storeDir, 'missing.info') },
+    keyProvider: async () => undefined, fetchImpl,
+  })
+  const started = await adapter.startLogin()
+  assert.ok(started.loginId)
+  const polled = await adapter.pollLogin(started.loginId)
+  assert.equal(polled.success, true)
+  assert.ok(polled.accountId)
+  await adapter.rescanNow()
+  const accounts = adapter.publicAccounts()
+  assert.equal(accounts.length, 1)
+  assert.equal(accounts[0].source, 'vault')
+  assert.equal(accounts[0].deletable, true)
+  assert.equal(JSON.stringify(accounts).includes('web-access'), false)
+  assert.equal(adapter.vaultAccounts().length, 1)
+  const exported = adapter.exportAccounts()
+  assert.equal(exported.filename, 'workbuddy-auth.global.json')
+  assert.ok(exported.content.includes('web-access'))
+  const removed = await adapter.removeAccount(polled.accountId)
+  assert.equal(removed.removed, true)
+  assert.equal(adapter.vaultAccounts().length, 0)
+})
+
+await check('adapter rejects a web login whose account belongs to the other region', async () => {
+  const storeDir = path.join(temp, 'adapter-wrongregion')
+  fs.mkdirSync(storeDir, { recursive: true })
+  const fetchImpl = async (url) => {
+    const json = obj => ({ ok: true, status: 200, text: async () => JSON.stringify(obj) })
+    if (url.includes('/auth/state')) return json({ code: 0, data: { state: 'S', authUrl: 'https://www.codebuddy.cn/login?state=S' } })
+    if (url.includes('/auth/token')) return json({ code: 0, data: { accessToken: 'cn-token', refreshToken: 'cn-ref', domain: 'copilot.tencent.com' } })
+    return json({ code: 0, data: { uid: 'cn-uid', domain: 'copilot.tencent.com' } })
+  }
+  const adapter = new WorkBuddyDesktopAdapter({
+    region: 'global', provider: 'workbuddy', storeDir, logger: quiet,
+    env: {}, keyProvider: async () => undefined, fetchImpl,
+  })
+  const started = await adapter.startLogin()
+  const polled = await adapter.pollLogin(started.loginId)
+  assert.equal(polled.success, false)
+  assert.match(polled.error, /国内版/)
+  assert.equal(adapter.vaultAccounts().length, 0, 'a wrong-region login must not be saved')
 })
 
 fs.rmSync(temp, { recursive: true, force: true })

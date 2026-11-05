@@ -123,12 +123,19 @@ wire 头请求上游。
 | `store.mjs` | 刷新结果写回本仓库数据目录（0600 原子写），绝不回写桌面 App |
 | `catalog.mjs` | `/v3/config` 模型解析与兜底目录（数据来自渠道包 `buddy.ts` 的兜底表） |
 | `upstream.mjs` | 目录读取、聊天请求头/请求体加工、SSE→归一化 chunk、token 刷新、错误分类 |
-| `adapter.mjs` | `LlmAdapter` 契约实现、多账号选择与续期 |
+| `adapter.mjs` | `LlmAdapter` 契约实现、多账号选择与续期、网页登录与账号管理 |
+| `oauth.mjs` | 网页/扫码登录：`/v2/plugin/auth/state` → `auth/token` → `login/account`，字段双拼写容错、区域/域名绑定、10 分钟会话 |
+| `vault.mjs` | 网页登录账号的凭据库（一账号一文件、0600）、删除、脱敏摘要与导出 |
+
+凭据共四类来源，合并成同一份清单：`WORKBUDDY_AUTH_FILE` → 平台默认桌面 auth 目录
+→ 数据目录 `workbuddy-auth.<region>.json` → 网页登录的 vault。桌面 App 的文件始终只读。
 
 接线在 `app/channels/worker.mjs` 与 `app/ui/channels.tsx`：两个适配器在渠道包 `apply()`
 之前注册（利用其 `registerAdapterIdempotent` 的「保留先注册者并跳过」语义），推理走受限
 直通分支，管理面 RPC 对这两家先拦截。渠道包内两套旧 `BuddyAuth` 实例残留但空转，不改动
 `vendor/channel-pack/pack.js` 与 `scripts/build-channels.mjs`。
+`scripts/export-workbuddy-auth.mjs` 在已安装桌面 App 的机器上把加密登录态解密导出成
+明文 store 文件，供无桌面端的服务器使用；控制台的「导出账号」则导出网页登录的 vault。
 
 ### 第三方来源与许可
 
@@ -149,8 +156,9 @@ wire 头请求上游。
 ### 明确未移植的部分（M2）
 
 设备 turing token / machine id、积分倍率与活动徽标、逐模型图片核验表与默认推理档、
-每日签到、生图与视频、CLI 路线、插件式 `workbuddy-global` 命名、插件自带的 loopback shim。
-本项目自身已是 OpenAI / Anthropic 兼容网关，无需再套一层随机端口 + secret 的 shim。
+每日签到、生图与视频、CLI 路线、插件式 `workbuddy-global` 命名、插件自带的 loopback shim、
+批量导入导出与逐账号测试。本项目自身已是 OpenAI / Anthropic 兼容网关，无需再套一层
+随机端口 + secret 的 shim；网页登录与单账号导出已按上文实现。
 
 ## 上游第三方声明
 

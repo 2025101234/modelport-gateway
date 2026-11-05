@@ -5,9 +5,10 @@
  * `BuddyAuth` + `registerBuddyLlm`。注册进 `ctx.llm` 后，`buddy/*` 与
  * `workbuddy/*` 就照常出现在 `/v1/models`、降级链与控制台里。
  *
- * 凭据来源与渠道包完全不同：**只读本机/搬运来的桌面端登录态**，不弹 OAuth、
- * 不往 channel-credentials.json 写凭据。同区域多账号按「未过期优先、到期更晚
- * 优先」排序，一次失败可换下一个账号（与降级链语义一致）。
+ * 凭据来源与渠道包不同：桌面 App 的登录态文件只读；网页/扫码登录的账号写入
+ * 本仓库自己的 vault；服务器上再叠加搬运来的 store 文件。三类来源合并成同一份
+ * 清单，同区域多账号按「未过期优先、到期更晚优先」排序，一次失败可换下一个账号。
+ * 不往 channel-credentials.json 写任何凭据。
  *
  * ⚠️ 这是非官方客户端接口的反代，上游改动可能使其失效。
  *
@@ -19,6 +20,8 @@ import { fallbackModels } from './catalog.mjs'
 import { writeOwnCredential, removeOwnCredential } from './store.mjs'
 import { chatStream, fetchModels, refreshToken, classifyUpstreamError } from './upstream.mjs'
 import { createAppKeyProvider, ENCRYPTED_CREDENTIAL_CODE } from './at-rest.mjs'
+import { createOAuthSessions } from './oauth.mjs'
+import { saveAccount, deleteAccount, exportVault, accountSummary, isAccountId } from './vault.mjs'
 
 /** token 到期前 5 分钟就续期（与插件的按需刷新口径一致）。 */
 const REFRESH_MARGIN_MS = 5 * 60 * 1000
@@ -67,6 +70,57 @@ export class WorkBuddyDesktopAdapter extends LlmAdapter {
     this.credentialCacheAt = 0
     this.refreshInFlight = undefined
     this.scanning = undefined
+    // 每 Worker 一份登录会话表；fetchImpl 注入后离线测试无需访问外网。
+    this.oauth = createOAuthSessions({ ...(fetchImpl ? { fetchImpl } : {}) })
+  }
+
+  // ── 网页 / 扫码登录 ────────────────────────────────────────────────────────
+
+  /** 起一次登录：返回 { loginId, loginUrl, expiresIn } 或 { error }。 */
+  async startLogin({ base } = {}) {
+    return this.oauth.start(this.region, { base })
+  }
+
+  /**
+   * 轮询一次。成功即刻把凭据写入 vault（本仓库自己的库，不动桌面 App），
+   * 并让账号/目录缓存失效，返回 { done, success, accountId? }。
+   */
+  async pollLogin(loginId) {
+    const result = await this.oauth.poll(loginId, this.region)
+    if (result.done !== true) return { done: false }
+    if (result.error !== undefined) return { done: true, success: false, error: result.error }
+    const { credential, account } = result.account
+    const region = result.account.region === 'cn' || result.account.region === 'global'
+      ? result.account.region : this.region
+    if (region !== this.region) {
+      return { done: true, success: false, error: `登录得到的账号属于${region === 'global' ? '国际版' : '国内版'}，请在对应的渠道页操作` }
+    }
+    const merged = { ...credential, ...account }
+    const { accountId } = saveAccount(this.storeDir, this.region, merged)
+    this.credentialCacheAt = 0
+    this.modelCacheAt = 0
+    this.logger.info?.(`${this.provider}: 网页登录成功，账号 ${preferredAccountName(merged)} 已写入 vault`)
+    return { done: true, success: true, accountId, nickname: preferredAccountName(merged) }
+  }
+
+  /** 删除本仓库 vault 里的一个账号；桌面 App 登录不受影响。 */
+  async removeAccount(accountId) {
+    if (!isAccountId(accountId)) throw new LlmError('账号 id 非法', 'BAD_REQUEST')
+    const removed = deleteAccount(this.storeDir, this.region, accountId)
+    this.credentialCacheAt = 0
+    this.modelCacheAt = 0
+    return { removed }
+  }
+
+  /** 脱敏的 vault 账号摘要；绝不回显 token。 */
+  vaultAccounts() {
+    return accountSummary(this.storeDir).filter(row => row.region === this.region)
+  }
+
+  /** 导出本区域 vault 账号成服务器可用的文件名 + 内容（明文，调用方负责保管）。 */
+  exportAccounts() {
+    const all = exportVault(this.storeDir)
+    return all[this.region] ?? null
   }
 
   /**
@@ -118,6 +172,9 @@ export class WorkBuddyDesktopAdapter extends LlmAdapter {
       encrypted: account.encrypted === true,
       source: account.source,
       file: account.filePath.split(/[\\/]/).pop(),
+      // 只有本仓库 vault 里的账号可以删除；桌面 App / 搬运文件永远只读。
+      ...account.source === 'vault' && account.vaultAccountId
+        ? { vaultAccountId: account.vaultAccountId, deletable: true } : {},
     }))
   }
 
