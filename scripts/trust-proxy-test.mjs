@@ -84,6 +84,21 @@ check('trustProxy takes the first value of a comma-joined forwarded header', () 
   }), { trustProxy: true }), undefined)
 })
 
+check('trustProxy tolerates a repeated X-Forwarded-Proto header', () => {
+  // A misconfigured proxy can emit the header twice ("http, http"); comparing
+  // the raw joined value against the origin would reject every request.
+  assert.equal(structuralRejection(req({
+    'x-forwarded-host': '47.108.118.69',
+    'x-forwarded-proto': 'http, http',
+    origin: 'http://47.108.118.69',
+  }), { trustProxy: true }), undefined)
+  assert.equal(structuralRejection(req({
+    'x-forwarded-host': '47.108.118.69',
+    'x-forwarded-proto': 'http, http',
+    origin: 'https://47.108.118.69',
+  }), { trustProxy: true }), 403, 'the first value still decides the scheme')
+})
+
 check('trustProxy rejects a malformed forwarded header value', () => {
   assert.equal(structuralRejection(req({
     'x-forwarded-host': 'http://evil.example',

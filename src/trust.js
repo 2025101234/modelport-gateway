@@ -150,9 +150,12 @@ function structuralReason(req, options = {}) {
   const host = authorityOf(req.headers.host, 'http')
   if (host === null || !LOOPBACK_NAMES.has(host.hostname)) return 'host-not-loopback'
   const forwarded = options.trustProxy === true ? firstForwarded(req.headers['x-forwarded-host']) : undefined
+  // A proxy may repeat this header (and our nginx config did): take the first
+  // value, or `authorityOf` sees "http, http" and rejects the whole request.
+  const forwardedProto = firstForwarded(options.forwardedProto ?? req.headers['x-forwarded-proto'])
   const expected = forwarded === undefined
     ? host
-    : authorityOf(`${options.forwardedProto ?? req.headers['x-forwarded-proto'] ?? 'http'}://${forwarded}`, 'http')
+    : authorityOf(`${forwardedProto ?? 'http'}://${forwarded}`, 'http')
   if (expected === null) return 'forwarded-host-invalid'
   const site = String(req.headers['sec-fetch-site'] ?? '').toLowerCase()
   if (site === 'cross-site') return 'cross-site'
