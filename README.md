@@ -189,34 +189,48 @@ Grok 和上面 13 家不一样，这一点值得先讲清楚，免得你以为�
 
 > ⚠️ 这是**非官方**客户端接口的反代。上游随时可能改协议或收紧限制，不提供长期可用承诺。
 
-#### 部署到无桌面端的服务器
+#### 部署到无桌面端的服务器：电脑登录 → 导出 → 上传
 
-服务器没有桌面 App，读不到本机登录态；做法是把**已登录机器上的凭据**搬过来：
+服务器没有桌面 App，读不到本机登录态；推荐做法正是**先在电脑上登录，再打包上传**。
+但有一个决定性的坑，先看这条：
+
+> 🔐 **不要直接打包桌面 App 的 `*.info` 文件**：WorkBuddy 5.6.0 起把 token 字段
+> 加密成 AES-256-GCM 信封，密钥由 App 的原生绑定在运行时现取、不落盘。没有 App 的
+> 服务器上，加密文件拷过去也解不开（控制台会明确报「凭据已加密但取不到密钥」）。
+>
+> 所以正确姿势是：**在有 App 的电脑上先把登录态解密导出成明文文件，再上传**。
+> `scripts/export-workbuddy-auth.mjs` 就是干这件事的。
 
 ```sh
-# 1) 在「已登录 WorkBuddy 桌面端」的机器上找到并打包凭据目录
-#    macOS：  ~/Library/Application Support/CodeBuddyExtension
-#    Linux：  ${XDG_CONFIG_HOME:-~/.config}/CodeBuddyExtension
-#    Windows：%LOCALAPPDATA%\CodeBuddyExtension 以及 %APPDATA%\CodeBuddyExtension
-tar czf codebuddy-cred.tgz -C <上面的父目录> CodeBuddyExtension
+# 1) 在电脑上：装好 WorkBuddy 桌面 App 并登录（国内版/国际版可同时登录）
 
-# 2) 经加密通道（scp / 私网）传到服务器，解到数据目录，收紧权限
-mkdir -p ~/.modelport
-tar xzf codebuddy-cred.tgz -C ~/.modelport
-chmod 600 ~/.modelport/workbuddy-auth.*.json ~/.modelport/CodeBuddyExtension/Data/Public/auth/*.info 2>/dev/null
+# 2) 在电脑上：导出成未加密的 workbuddy-auth.<region>.json
+node scripts/export-workbuddy-auth.mjs --out ./workbuddy-export
+#    输出 workbuddy-auth.cn.json（国内版 buddy）与
+#          workbuddy-auth.global.json（国际版 workbuddy），各取到期最晚的账号。
+#    脚本会自动找 App 拿密钥解密；找不到会给出可操作的提示。
+#    若 App 装在非常规位置，先设 WORKBUDDY_APP_EXECUTABLE 指向其可执行文件。
+#    只想导出某一份文件里的登录态，可设 WORKBUDDY_AUTH_FILE 指向该 .info。
 
-# 3) 用 WORKBUDDY_AUTH_FILE 指向那份 auth 文件后启动
-WORKBUDDY_AUTH_FILE=~/.modelport/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info node app/cli.mjs
+# 3) 经加密通道上传到服务器的数据目录（默认 ~/.modelport，或 MODELPORT_HOME）
+scp ./workbuddy-export/workbuddy-auth.*.json user@server:~/.modelport/
+ssh user@server 'chmod 600 ~/.modelport/workbuddy-auth.*.json'
+
+# 4) 在服务器上启动（无需安装桌面 App，也无需 WORKBUDDY_AUTH_FILE）
+node app/cli.mjs --lan
 ```
 
-也可以直接把一份**未加密**的 `workbuddy-auth.cn.json` / `workbuddy-auth.global.json`
-放进数据目录，无需设置环境变量。凭据文件等同于账号，别放进会被打包或提交的目录。
+导出的文件里带 refresh token，服务器上的网关会自动续期并写回自己的数据目录，
+不需要反复重传。凭据文件**等同于账号**：只经加密通道传输、`chmod 600`、
+别放进会被 git 提交/打包/同步网盘的目录，用完后删掉电脑上那份导出物。
 
-> 🔐 **加密凭据（WorkBuddy 5.6.0 起）无法靠搬运解决**：新版桌面端把 token 字段加密了，
-> 密钥由 App 的原生绑定在运行时现取、不落盘。没有 App 的服务器上即使把加密文件拷过去
-> 也读不出来（控制台会明确报「凭据已加密但取不到密钥」，而不是静默当作未登录）。
-> 可行做法：从凭据未加密的机器搬运，或在该服务器上安装 App 并用
-> `WORKBUDDY_APP_EXECUTABLE` 指定其可执行文件以取得密钥。
+如果你手上正好是一份**未加密**的旧版 auth 文件，也可以直接走
+`WORKBUDDY_AUTH_FILE=/path/to/workbuddy-desktop.info node app/cli.mjs`
+（或把同形状的 `workbuddy-auth.<region>.json` 直接放进数据目录），无需导出脚本。
+
+> ℹ️ 当前实现**没有网页端 / 扫码登录**：这两家只支持「读桌面 App 登录态」与
+> 「读搬运来的凭据文件」两条路，控制台里的添加账号等写操作会明确拒绝。
+> 上游插件的扫码/网页授权登录与账号池 vault 属于未移植范围。
 
 对外暴露沿用现有机制：`startService` 只绑回环地址，管理 API 也仅限回环 +
 Host/Origin 同源校验；`--lan` 中继绑 `0.0.0.0` 但**只转发 `/v1/*`** 且用独立 `lanKey`。
@@ -239,10 +253,13 @@ Host/Origin 同源校验；`--lan` 中继绑 `0.0.0.0` 但**只转发 `/v1/*`** 
 
 | 变量 | 作用 |
 | --- | --- |
-| `MODELPORT_HOME` | 数据目录（等价于 `--data-dir`） |
-| `WORKBUDDY_AUTH_FILE` | 显式指定 WorkBuddy 桌面端 auth 文件路径（服务器部署首选） |
-| `WORKBUDDY_APP_EXECUTABLE` | 加密凭据解密时，指定桌面 App 可执行文件 |
+| `MODELPORT_HOME` | 数据目录（等价于 `--data-dir`）；服务器上把导出的 `workbuddy-auth.*.json` 放这里 |
+| `WORKBUDDY_AUTH_FILE` | 显式指定一份 WorkBuddy auth 文件（未加密旧文件可直接在服务器用；导出脚本也可只导这一份） |
+| `WORKBUDDY_APP_EXECUTABLE` | 加密凭据解密时，指定桌面 App 可执行文件（本机导出时用，服务器无需） |
 | `CMDC_PAK_GOOGLE_CLIENT_ID` / `CMDC_PAK_GOOGLE_CLIENT_SECRET` | Gemini 渠道自带的 OAuth 客户端 |
+
+服务器部署的凭据搬运另见 `scripts/export-workbuddy-auth.mjs`：在已登录桌面 App 的
+电脑上把登录态解密导出成明文 store 文件，再上传到服务器的数据目录。
 
 ---
 

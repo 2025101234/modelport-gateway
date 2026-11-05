@@ -33,6 +33,8 @@ import {
   chatStream, fetchModels, refreshToken, CLIENT_UA, PRODUCT_UA,
 } from '../app/channels/workbuddy-desktop/upstream.mjs'
 import { ownDocument, writeOwnCredential } from '../app/channels/workbuddy-desktop/store.mjs'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { WorkBuddyDesktopAdapter, providerForRegion } from '../app/channels/workbuddy-desktop/adapter.mjs'
 
 let failures = 0
@@ -561,6 +563,56 @@ await check('adapter streamBody streams normalized chunks through a stubbed fetc
   for await (const chunk of adapter.streamBody({ model: 'workbuddy/fast-model', messages: [{ role: 'user', content: 'hi' }] })) chunks.push(chunk)
   assert.ok(chunks.some(chunk => chunk.type === 'text-delta' && chunk.text === 'OK'))
   assert.equal(chunks.at(-1).type, 'finish')
+})
+
+// ── 10. 导出脚本：本机登录 → 明文 store 文件 → 服务器可读 ─────────────────────
+await check('export script turns a plain desktop sign-in into a server-ready credential file', () => {
+  const signInDir = path.join(temp, 'export-src')
+  const outDir = path.join(temp, 'export-out')
+  fs.mkdirSync(signInDir, { recursive: true })
+  const authFile = path.join(signInDir, 'workbuddy-desktop.info')
+  fs.writeFileSync(authFile, JSON.stringify({
+    auth: { accessToken: 'export-token', refreshToken: 'export-refresh', domain: 'www.workbuddy.ai', expiresAt: 1900000000 },
+    account: { uid: 'u-export', nickname: '导出账号' },
+  }))
+  const script = fileURLToPath(new URL('./export-workbuddy-auth.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, [script, '--out', outDir], {
+    env: { ...process.env, WORKBUDDY_AUTH_FILE: authFile, WORKBUDDY_APP_EXECUTABLE: '' },
+    encoding: 'utf8',
+  })
+  assert.equal(result.status, 0, `export failed: ${result.stderr}`)
+  const file = path.join(outDir, 'workbuddy-auth.global.json')
+  assert.ok(fs.existsSync(file), 'global credential file must be written')
+  const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.equal(doc.auth.accessToken, 'export-token')
+  assert.equal(doc.auth.refreshToken, 'export-refresh', 'refresh token must travel so the server can renew')
+  assert.equal(doc.auth.domain, 'www.workbuddy.ai')
+  assert.ok(result.stdout.includes('workbuddy-auth.global.json'))
+  // 服务器侧：把导出物放进数据目录，scanCredentials 必须能读到且按 global 分流。
+  const serverDir = path.join(temp, 'export-server')
+  fs.mkdirSync(serverDir, { recursive: true })
+  fs.copyFileSync(file, path.join(serverDir, 'workbuddy-auth.global.json'))
+  return scanCredentials({
+    env: { WORKBUDDY_AUTH_FILE: '' }, platform: 'linux', home: temp, storeDir: serverDir,
+    keyProvider: async () => undefined,
+  }).then(server => {
+    assert.equal(server.accounts.length, 1, 'server reads the exported credential with no desktop app')
+    assert.equal(server.accounts[0].region, 'global')
+    assert.equal(server.accounts[0].credential.accessToken, 'export-token')
+    assert.equal(server.diagnostics.encryptedCredentialUnsupported, false)
+  })
+})
+
+await check('export script reports an actionable error when there is no sign-in', () => {
+  const outDir = path.join(temp, 'export-empty')
+  const script = fileURLToPath(new URL('./export-workbuddy-auth.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, [script, '--out', outDir], {
+    env: { ...process.env, WORKBUDDY_AUTH_FILE: path.join(temp, 'definitely-missing.info'), WORKBUDDY_APP_EXECUTABLE: '' },
+    encoding: 'utf8',
+  })
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /没有检测到可用的 WorkBuddy 登录态/)
+  assert.match(result.stderr, /WORKBUDDY_AUTH_FILE/)
 })
 
 fs.rmSync(temp, { recursive: true, force: true })
